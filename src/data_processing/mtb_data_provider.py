@@ -9,7 +9,6 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-sys.path.append('../src')
 from matplotlib.pyplot import figure
 import subprocess
 import requests 
@@ -24,7 +23,11 @@ LONGITUDE_KEY = 'position_long'
 class MtbDataProvider:
 
     def convert_and_read_fit_file(self, filename):
-        subprocess.run(["java", "-jar", "FitSDKRelease_21.16.00/java/FitCSVTool.jar", filename + ".fit"])
+        print("Converting fit file", filename)
+
+        converter = os.path.abspath("FitSDKRelease_21.16.00/java/FitCSVTool.jar")
+        filepath = os.path.abspath(filename + ".fit")
+        subprocess.run(["java", "-jar", converter,  filepath])
         data = pd.read_csv(filename + ".csv")
         datav = data.query("Message == 'record'").values
         return datav      
