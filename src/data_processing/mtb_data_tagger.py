@@ -22,15 +22,12 @@ DISTANCE_META_THRESHOLD = 10 #in meters
 
 class MtbDataTagger:
 
-    def get_bounding_box_for_recording(self, data, mtb_data_provider, padding=0.):
-        latitudes = mtb_data_provider.get_values_for(data, LATITUDE_KEY)[1::25]
-        longitudes = mtb_data_provider.get_values_for(data, LONGITUDE_KEY)[1::25]
-
+    def get_bounding_box_for_recording(self, latitudes, longitudes, mtb_data_provider, padding=0.):
         min_latitude = np.min(latitudes)
         max_latitude = np.max(latitudes)
         min_longitude = np.min(longitudes)
         max_longitude = np.max(longitudes)
-        
+
         top_left = (max_latitude + padding, min_longitude - padding)
         bottom_right = (min_latitude - padding, max_longitude + padding)
         
@@ -47,7 +44,7 @@ class MtbDataTagger:
     #https://www.trailforks.com/api/1/maptrails?output=encoded&filter=bbox%3A%3A47.41852456703782%2C12.356023974716663%2C47.41852456703782%2C12.356023974716663&api_key=docs
     def fetch_area_from_trailforks(self, top_left, bottom_right):
         bbox= 'bbox::' + str(top_left[0]) + ',' + str(top_left[1]) + ',' + str(bottom_right[0]) + ',' + str(bottom_right[1])
-        url= 'https://www.trailforks.com/api/1/trails?scope=track&filter=' + bbox + '&api_key=docs'
+        url= 'https://www.trailforks.com/api/1/trails?scope=track&filter=' + bbox + '&app_secret=374340a0656feca4&app_id=45'
         print("fetching from: ", url)
         response = requests.get(url)
         return response
@@ -92,9 +89,9 @@ class MtbDataTagger:
                         
         return mapped_nodes
 
-    def find_meta_data_for_recording(self, data, openstreetmap_meta, trailforks_meta, mtb_data_provider):
-        latitudes = mtb_data_provider.get_values_for(data, LATITUDE_KEY)[1::25]
-        longitudes = mtb_data_provider.get_values_for(data, LONGITUDE_KEY)[1::25]
+    def find_meta_data_for_recording(self, latitudes, longitudes, openstreetmap_meta, trailforks_meta, mtb_data_provider):
+        #latitudes = mtb_data_provider.get_values_for(data, LATITUDE_KEY)[1::25]
+        #longitudes = mtb_data_provider.get_values_for(data, LONGITUDE_KEY)[1::25]
         closest_items = []
         
         for i in range(len(latitudes)):
