@@ -95,7 +95,7 @@ class MtbDataProvider:
         return results
 
     def calculate_features(self, samples, step_size, sub_sample_length, keep_positions=False):
-        print("Calculating Features")
+        print("Calculating Features:", samples[0].shape[0], sub_sample_length)
 
         result = []
 
@@ -223,11 +223,15 @@ class MtbDataProvider:
 
         stride = int(window_length // (1 // step_size))
         for i in range(0, data.shape[0], stride):
-            label = labels[i]
+            label = 0
             if i + window_length > data.shape[0]:
                 window = data[-window_length:,  :]
+                #label = np.argmax(np.bincount(labels[-window_length:]))
+                label = round(np.mean(labels[-window_length:]))
             else:
                 window = data[i:i + window_length, :]
+                #label = np.argmax(np.bincount(labels[i:i + window_length]))
+                label = round(np.mean(labels[i:i + window_length]))
             windows.append(window)
             windowed_labels.append(label)
 
@@ -294,7 +298,9 @@ class MtbDataProvider:
 
         return X_result, y_result
 
-    def prepare_raw_data(self, files, columns, location_based_label_files=None, speed_threshold=1, folder='data', transpose=False, fetch_from_apis=False):
+    def prepare_raw_data(self, files, columns, location_based_label_files=None, speed_threshold=1, folder='data', transpose=False, fetch_from_apis=False, force_overwrite=True):
+        print("Preparing raw data...")
+
         results = []
         resulting_labels = []
         concatenated = None
@@ -315,14 +321,20 @@ class MtbDataProvider:
 
             # Check if there are location based labels
             if location_based_label_files is not None:
-                location_based_label_file = location_based_label_files[i]
-                labels = self.label_data(data, location_based_label_file)
+                # If the label assignment has been done before and force_overwrite is false: Load from the file
+                label_file_name = file_name + '_labels'
+                if os.path.isfile(label_file_name + '.npy') and not force_overwrite:
+                    labels = np.load(label_file_name + '.npy')
+                else:
+                    location_based_label_file = location_based_label_files[i]
+                    labels = self.label_data(data, location_based_label_file)
+                    np.save(label_file_name, labels)
                 resulting_labels.append(labels)
 
             if transpose:
                 concatenated = np.concatenate((concatenated, data)) if concatenated is not None else data
                 if location_based_label_files is not None:
-                    concatenated_labels = np.concatenate((concatenated_labels, labels)) if concatenated_labels is not None else data
+                    concatenated_labels = np.hstack((concatenated_labels, labels)) if concatenated_labels is not None else labels
 
         results.append(concatenated)
         resulting_labels.append(concatenated_labels)
@@ -330,45 +342,40 @@ class MtbDataProvider:
         print("Done")
         return results, resulting_labels
 
-    def label_data(self, data, labels_file_name, distance_threshold = 6, accuracy_threshold=20, n_nearest_labels=5):
+    def label_data(self, data, labels_file_name, distance_threshold = 50, accuracy_threshold=20):
         labels = []
-        labels_csv = pd.read_csv(labels_file_name)
+        labels_csv = pd.read_csv('data/' + labels_file_name + '.csv')
 
+        print("Labeling data by comparing locations ...")
+
+        last_label = 0
+        last_location = None
         # Iterate through samples
-        for i in len(range(data)):
+        for i in tqdm(range(len(data))):
             sample = data[i]
             sample_location = (sample[-2], sample[-1])
 
-            # Iterate through labels
-            for index, label_row in labels.iterrows():
-                label_location = (label_row['latitude'], label_row['longitude'])
-                accuracy = labels['accuracy']
+            if last_location == sample_location:
+                labels.append(last_label)
+                break
 
-                # Discard samples with low accuracy
-                if accuracy > accuracy_threshold:
-                    continue
+            smallest_distance_label = (99999, 0)
+
+            # Iterate through labels
+            for index, label_row in labels_csv.iterrows():
+                label_location = (label_row['latitude'], label_row['longitude'])
 
                 # Calculate distance between label and sample
                 distance = geodesic(sample_location, label_location).meters
 
-                smallest_distances = dict()
-                # If the distance is small enough, remember it
-                if distance <= distance_threshold:
-                    smallest_distances[str(distance)] = label_row['label']
+                # Find the smallest distance
+                if distance < distance_threshold and distance < smallest_distance_label[0]:
+                    smallest_distance_label = (distance, label_row['label'])
+                    last_label = smallest_distance_label[1]
+                    last_location = label_location
 
-                    # If there are n labels with low enough distance
-                    if len(smallest_distances.keys()) == n_nearest_labels:
-                        # Find the smallest distance
-                        float_smallest_distances = np.asarray(smallest_distances.keys, dtype=np.float32)
-                        smallest_distance_label = smallest_distances[str(np.min(float_smallest_distances))]
-                        # Set the respective label
-                        labels.append(smallest_distance_label)
-                        smallest_distances = dict()
-                        # Jump to next sample
-                        break
-                        # TODO, Do not iterate the whole file each time
-                        # i += 1
-                        # continue
+            labels.append(smallest_distance_label[1])
+
         return labels
 
     def prepare_and_save_samples(self,
@@ -412,7 +419,7 @@ class MtbDataProvider:
 
                 print("raw:", raw_windowed.shape)
                 print("features:", features_windowed.shape)
-                print("labels:", labels_windowed.shape)
+                print("labels:", labels_windowed.shape, np.unique(labels_windowed, return_counts=True))
                 print("--------------------------------\n")
 
 

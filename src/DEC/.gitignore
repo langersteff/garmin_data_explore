@@ -1,0 +1,20 @@
+# ignore auto generated (by pycharm) folder '.idea/'
+.idea/
+
+# ignore data set
+data/*/*
+!/data/usps/download_usps.sh
+!/data/reuters/get_data.sh
+!/data/stl/get_data.sh
+
+# ignore the results of running code 'results/'
+results/*/*
+results/*.csv
+!/results/exp1/results.csv
+
+# ignore others
+*.h5
+*.pyc
+
+SAE.py
+
