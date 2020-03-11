@@ -10,7 +10,6 @@ from keras.layers import Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAverage
 from keras.layers import Concatenate, Input, concatenate
 from keras.optimizers import SGD
 from sklearn.model_selection import KFold
-from FIDCEC import FIDCEC
 from DEC.DEC import DEC
 import geopandas as gpd
 from geopandas import GeoDataFrame
@@ -181,13 +180,12 @@ class MtbClassifier:
     ######## UNSUPERVISED DEEP CLUSTERING ########
     ##############################################
 
-    def train_and_compare_fidcec(self,
+    def train_and_compare_unsupervised_clusterings(self,
                                 mtb_data_provider,
                                 force_overwrite = False,
                                 prefix = '',
                                 run_dec=True,
-                                run_fidcec=True,
-                                run_dcec=True,
+                                run_fidec=True,
                                 run_classical=True,
                                 window_lengths=[100,200],
                                 sub_sample_lengths=[50,100],
@@ -233,6 +231,15 @@ class MtbClassifier:
                     gdf = GeoDataFrame(geometry=geometry)
                     gdf.plot(c=y_true, figsize=(20, 30))
 
+                    init = 'glorot_uniform'
+                    pretrain_optimizer = 'adam'
+                    update_interval = 140
+                    pretrain_epochs = 300
+                    batch_size = 256
+                    tol = 0.001
+                    maxiter = 2e4
+                    save_dir = 'results'
+
                     if run_dec:
                         print("\n---- DEC ----")
                         filename_y_pred_dec = "evaluation/%s_dec_y_pred" % experiment_prefix
@@ -240,15 +247,6 @@ class MtbClassifier:
                         if os.path.isfile(filename_y_pred_dec + '.npy') and not force_overwrite:
                             y_pred = np.load(filename_y_pred_dec + '.npy')
                         else:
-                            init = 'glorot_uniform'
-                            pretrain_optimizer = 'adam'
-                            update_interval = 140
-                            pretrain_epochs = 300
-                            batch_size = 256
-                            tol = 0.001
-                            maxiter = 2e4
-                            save_dir = 'results'
-
                             data_raw_flat = data_raw.reshape((data_raw.shape[0] * data_raw.shape[1], data_raw.shape[2]))
                             dec = DEC(dims=[data_raw_flat.shape[-1], 500, 500, 2000, 10], n_clusters=num_clusters, init=init)
                             dec.pretrain(x=data_raw_flat, y=None, optimizer=pretrain_optimizer,
@@ -270,59 +268,35 @@ class MtbClassifier:
 
                         self.save_scores(filename_y_pred_dec + "_score", y_true, y_pred, data_features)
 
-                    if run_fidcec:
-                        print("\n---- FIDCEC ----")
-                        filename_y_pred_fidcec = "evaluation/%s_fidcec_y_pred" % experiment_prefix
+                    if run_fidec:
+                        print("\n---- FIDEC ----")
+                        filename_y_pred_fidec = "evaluation/%s_fidec_y_pred" % experiment_prefix
 
-                        if os.path.isfile(filename_y_pred_fidcec + '.npy') and not force_overwrite:
-                            y_pred = np.load(filename_y_pred_fidcec + '.npy')
+                        if os.path.isfile(filename_y_pred_fidec + '.npy') and not force_overwrite:
+                            y_pred = np.load(filename_y_pred_fidec + '.npy')
                         else:
-                            fidcec = FIDCEC([data_raw[0].shape, data_features[0].shape], n_clusters=num_clusters)
-                            fidcec.compile(loss=loss, loss_weights=loss_weights, optimizer=optimizer)
-                            fidcec.fit([data_raw, data_features], y=None,
-                                    tol=tol,
-                                    maxiter=maxiter,
-                                    update_interval=update_interval,
-                                    save_dir=save_dir,
-                                    verbose = verbose,
-                                    cae_weights=None)
-                            y_pred = fidcec.y_pred
+                            data_raw_flat = data_raw.reshape((data_raw.shape[0] * data_raw.shape[1], data_raw.shape[2]))
+                            fidec = DEC(dims=[data_raw_flat.shape[-1], 500, 500, 2000, 10], feature_dims=data_features[0].shape, n_clusters=num_clusters, init=init)
+                            fidec.pretrain(x=[data_raw_flat, data_features], y=None, optimizer=pretrain_optimizer,
+                            epochs=pretrain_epochs, batch_size=batch_size,
+                            save_dir=save_dir)
+
+                            fidec.model.summary()
+                            t0 = time()
+                            fidec.compile(optimizer=SGD(0.01, 0.9), loss='kld')
+                            y_pred = fidec.fit(data_raw_flat, y=None, tol=tol, maxiter=maxiter, batch_size=batch_size,
+                                            update_interval=update_interval, save_dir=save_dir)
                             print("y_pred", np.unique(y_pred, return_counts=True))
-                            np.save(filename_y_pred_fidcec, y_pred)
+                            np.save(filename_y_pred_fidec, y_pred)
 
                         fig1 = figure(1, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                        fig1.suptitle('FIDCEC', fontsize=20)
+                        fig1.suptitle('FIDEC', fontsize=20)
                         gdf = GeoDataFrame(geometry=geometry)
                         gdf.plot(c=y_pred, figsize=(20, 30))
 
-                        self.save_scores(filename_y_pred_fidcec + "_score", y_true, y_pred, data_features)
+                        self.save_scores(filename_y_pred_fidec + "_score", y_true, y_pred, data_features)
 
-                    if run_dcec:
-                        print("\n---- DCEC ----")
-                        filename_y_pred_dcec = "evaluation/%s_dcec_y_pred" % experiment_prefix
 
-                        if os.path.isfile(filename_y_pred_dcec + '.npy') and not force_overwrite:
-                            y_pred = np.load(filename_y_pred_dcec + '.npy')
-                        else:
-                            fidcec = FIDCEC([data_raw[0].shape, null_features[0].shape], n_clusters=num_clusters)
-                            fidcec.compile(loss=loss, loss_weights=loss_weights, optimizer=optimizer)
-                            fidcec.fit([data_raw, null_features], y=None,
-                                    tol=tol,
-                                    maxiter=maxiter,
-                                    update_interval=update_interval,
-                                    save_dir=save_dir,
-                                    verbose = verbose,
-                                    cae_weights=None)
-                            y_pred = fidcec.y_pred
-                            np.save(filename_y_pred_dcec, y_pred)
-
-                        fig2 = figure(2, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                        fig1.suptitle('DCEC', fontsize=20)
-                        gdf = GeoDataFrame(geometry=geometry)
-                        print(y_pred.dtype)
-                        gdf.plot(c=y_pred, figsize=(20, 30))
-
-                        self.save_scores(filename_y_pred_dcec + "_score", y_true, y_pred, data_features)
 
                     if run_classical:
                         print("\n---- Classical SciKit Clustering on Features ----")
@@ -342,8 +316,9 @@ class MtbClassifier:
 
                         self.save_scores(filename_y_pred_classical + "_score", y_true, y_pred, data_features)
 
-                    filename_fidced = "evaluation/%s_fidcec_compare.png" % experiment_prefix
-                    plt.savefig(filename_fidced)
+                    # TODO: This doesn't properly save plots somehow
+                    filename_fidec = "evaluation/%s_fidec_compare.png" % experiment_prefix
+                    plt.savefig(filename_fidec)
                     plt.show()
 
     def save_scores(self, filename, y_true, y_pred, data):
