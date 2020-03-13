@@ -187,22 +187,23 @@ class MtbClassifier:
                                 run_dec=True,
                                 run_fidec=True,
                                 run_classical=True,
+                                dec_dims=[500, 500, 2000, 10],
                                 window_lengths=[100,200],
                                 sub_sample_lengths=[50,100],
                                 nums_clusters=[3],
-                                verbose = True,
-                                update_interval=140,
-                                save_dir='results/temp',
-                                tol=0.001,
-                                maxiter=2e4,
-                                optimizer='adam',
-                                loss=['kld', 'mse'],
-                                loss_weights=[.1, 1]):
+                                init = 'glorot_uniform',
+                                pretrain_optimizer = 'adam',
+                                update_interval = 140,
+                                pretrain_epochs = 300,
+                                batch_size = 256,
+                                tol = 0.001,
+                                maxiter = 2e4,
+                                save_dir = 'results'):
 
         for num_clusters in nums_clusters:
             for window_length in window_lengths:
                 for sub_sample_length in sub_sample_lengths:
-                    if sub_sample_length >= window_length:
+                    if sub_sample_length > window_length:
                         continue
 
                     print("----------------------------------------------------------------")
@@ -217,11 +218,19 @@ class MtbClassifier:
                     filename_features = "data/%s_features.npy" % data_prefix
                     filename_labels = "data/%s_labels.npy" % data_prefix
 
+                    # TODO: Only use Acc values in raw data?
+
                     # Load pre saved samples from npy files
-                    data_raw = np.load(filename_raw)
+                    data_raw = np.load(filename_raw)[:, :, :-2] # The last two values are latitude, longitude
+                    print("data_raw", data_raw.shape)
+                    data_raw_flat = data_raw.reshape((data_raw.shape[0], data_raw.shape[1] * data_raw.shape[2]))
+                    print("data_raw_flat", data_raw_flat.shape)
                     feature_file = np.load(filename_features)
                     data_features = feature_file[:, :-2]
+                    print("data_features", data_features.shape)
                     null_features = np.zeros(data_features.shape)
+                    dec_dims = np.hstack((data_raw_flat.shape[-1], dec_dims))
+
                     y_true = np.load(filename_labels)
                     print("y_true", np.unique(y_true, return_counts=True))
 
@@ -231,15 +240,6 @@ class MtbClassifier:
                     gdf = GeoDataFrame(geometry=geometry)
                     gdf.plot(c=y_true, figsize=(20, 30))
 
-                    init = 'glorot_uniform'
-                    pretrain_optimizer = 'adam'
-                    update_interval = 140
-                    pretrain_epochs = 300
-                    batch_size = 256
-                    tol = 0.001
-                    maxiter = 2e4
-                    save_dir = 'results'
-
                     if run_dec:
                         print("\n---- DEC ----")
                         filename_y_pred_dec = "evaluation/%s_dec_y_pred" % experiment_prefix
@@ -247,8 +247,7 @@ class MtbClassifier:
                         if os.path.isfile(filename_y_pred_dec + '.npy') and not force_overwrite:
                             y_pred = np.load(filename_y_pred_dec + '.npy')
                         else:
-                            data_raw_flat = data_raw.reshape((data_raw.shape[0] * data_raw.shape[1], data_raw.shape[2]))
-                            dec = DEC(dims=[data_raw_flat.shape[-1], 500, 500, 2000, 10], n_clusters=num_clusters, init=init)
+                            dec = DEC(dims=dec_dims, n_clusters=num_clusters, init=init)
                             dec.pretrain(x=data_raw_flat, y=None, optimizer=pretrain_optimizer,
                             epochs=pretrain_epochs, batch_size=batch_size,
                             save_dir=save_dir)
@@ -266,7 +265,7 @@ class MtbClassifier:
                         gdf = GeoDataFrame(geometry=geometry)
                         gdf.plot(c=y_pred, figsize=(20, 30))
 
-                        self.save_scores(filename_y_pred_dec + "_score", y_true, y_pred, data_features)
+                        self.save_scores(filename_y_pred_dec + "_score", y_true, y_pred, data_raw_flat)
 
                     if run_fidec:
                         print("\n---- FIDEC ----")
@@ -275,16 +274,16 @@ class MtbClassifier:
                         if os.path.isfile(filename_y_pred_fidec + '.npy') and not force_overwrite:
                             y_pred = np.load(filename_y_pred_fidec + '.npy')
                         else:
-                            data_raw_flat = data_raw.reshape((data_raw.shape[0] * data_raw.shape[1], data_raw.shape[2]))
-                            fidec = DEC(dims=[data_raw_flat.shape[-1], 500, 500, 2000, 10], feature_dims=data_features[0].shape, n_clusters=num_clusters, init=init)
-                            fidec.pretrain(x=[data_raw_flat, data_features], y=None, optimizer=pretrain_optimizer,
+                            fidec = DEC(dims=dec_dims, feature_dims=data_features[0].shape, n_clusters=num_clusters, init=init)
+                            fidec.pretrain(x=data_raw_flat, y=None, optimizer=pretrain_optimizer,
                             epochs=pretrain_epochs, batch_size=batch_size,
                             save_dir=save_dir)
 
                             fidec.model.summary()
                             t0 = time()
                             fidec.compile(optimizer=SGD(0.01, 0.9), loss='kld')
-                            y_pred = fidec.fit(data_raw_flat, y=None, tol=tol, maxiter=maxiter, batch_size=batch_size,
+                            fidec_input = [data_raw_flat, data_features]
+                            y_pred = fidec.fit(fidec_input, y=None, tol=tol, maxiter=maxiter, batch_size=batch_size,
                                             update_interval=update_interval, save_dir=save_dir)
                             print("y_pred", np.unique(y_pred, return_counts=True))
                             np.save(filename_y_pred_fidec, y_pred)
@@ -294,9 +293,7 @@ class MtbClassifier:
                         gdf = GeoDataFrame(geometry=geometry)
                         gdf.plot(c=y_pred, figsize=(20, 30))
 
-                        self.save_scores(filename_y_pred_fidec + "_score", y_true, y_pred, data_features)
-
-
+                        self.save_scores(filename_y_pred_fidec + "_score", y_true, y_pred, data_raw_flat)
 
                     if run_classical:
                         print("\n---- Classical SciKit Clustering on Features ----")
@@ -305,16 +302,16 @@ class MtbClassifier:
                         if os.path.isfile(filename_y_pred_classical + '.npy') and not force_overwrite:
                             y_pred = np.load(filename_y_pred_classical + '.npy')
                         else:
-                            clusterer = AgglomerativeClustering(n_clusters=num_clusters)
+                            clusterer = KMeans(n_clusters=num_clusters)
                             y_pred = clusterer.fit_predict(data_features)
                             np.save(filename_y_pred_classical, y_pred)
 
                         fig3 = figure(3, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                        fig1.suptitle('AgglomerativeClustering', fontsize=20)
+                        fig1.suptitle('Classical Clustering', fontsize=20)
                         gdf = GeoDataFrame(geometry=geometry)
                         gdf.plot(c=y_pred, figsize=(20, 30))
 
-                        self.save_scores(filename_y_pred_classical + "_score", y_true, y_pred, data_features)
+                        self.save_scores(filename_y_pred_classical + "_score", y_true, y_pred, data_raw_flat)
 
                     # TODO: This doesn't properly save plots somehow
                     filename_fidec = "evaluation/%s_fidec_compare.png" % experiment_prefix
@@ -330,9 +327,15 @@ class MtbClassifier:
         scores.append(['completeness_score', metrics.completeness_score(y_true, y_pred)])
         scores.append(['v_measure_score', metrics.v_measure_score(y_true, y_pred)])
         scores.append(['fowlkes_mallows_score', metrics.fowlkes_mallows_score(y_true, y_pred)])
-        scores.append(['silhouette_score', metrics.silhouette_score(data, y_pred)])
-        scores.append(['davies_bouldin_score', metrics.davies_bouldin_score(data, y_pred)])
-        scores.append(['calinski_harabasz_score', metrics.calinski_harabasz_score(data, y_pred)])
+
+        if len(np.unique(y_pred, return_counts=True)[0]) > 1:
+            scores.append(['silhouette_score', metrics.silhouette_score(data, y_pred)])
+            scores.append(['davies_bouldin_score', metrics.davies_bouldin_score(data, y_pred)])
+            scores.append(['calinski_harabasz_score', metrics.calinski_harabasz_score(data, y_pred)])
+        else:
+            scores.append(['silhouette_score', 0])
+            scores.append(['davies_bouldin_score', 0])
+            scores.append(['calinski_harabasz_score', 0])
 
         print(scores)
 

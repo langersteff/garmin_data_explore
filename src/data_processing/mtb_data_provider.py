@@ -314,6 +314,9 @@ class MtbDataProvider:
             data = self.split_hd_values(data)
             data = np.array(self.get_values_for(data, columns))
 
+            normalized_data = normalize(data[:-2, :], axis=1) # Normalize data despite latitude longitude
+            data = np.vstack((normalized_data, data[-2:, :]))
+
             if transpose:
                 data = data.T
 
@@ -390,16 +393,25 @@ class MtbDataProvider:
                              clear_outliers = False,
                              calc_features = True,
                              keep_positions = True,
-                             padding_left_right = 1,
+                             auto_padd_left_right=False,
                              speed_threshold = .3):
 
-        data_all, labels_all = self.prepare_raw_data(files, columns, speed_threshold=speed_threshold, location_based_label_files=location_based_label_files, transpose=True)
-        data_all = data_all[-1]
-        labels_all = labels_all[-1]
+        filename_data_all = 'data/' + prefix + '_data_all'
+        filename_labels_all = 'data/' + prefix + '_data_all'
+
+        if os.path.isfile(filename_data_all + '.npy') and not force_overwrite:
+            data_all = np.load(filename_data_all + '.npy')
+            labels_all = np.load(filename_labels_all + '.npy')
+        else:
+            data_all, labels_all = self.prepare_raw_data(files, columns, speed_threshold=speed_threshold, location_based_label_files=location_based_label_files, transpose=True)
+            data_all = data_all[-1]
+            labels_all = labels_all[-1]
+            np.save(filename_data_all, data_all)
+            np.save(filename_labels_all, labels_all)
 
         for window_length in window_lengths:
             for sub_sample_length in sub_sample_lengths:
-                if sub_sample_length >= window_length:
+                if sub_sample_length > window_length:
                     continue
 
                 filename_raw = "data/%s_%s_%s_raw" % (prefix, str(window_length),str(sub_sample_length))
@@ -407,7 +419,7 @@ class MtbDataProvider:
                 filename_labels = "data/%s_%s_%s_labels" % (prefix, str(window_length),str(sub_sample_length))
 
                 if not os.path.isfile(filename_raw) or  not os.path.isfile(filename_labels) or force_overwrite:
-                    padding_left_right = int((window_length%4)/2)
+                    padding_left_right = int((window_length%4)/2) if auto_padd_left_right else 0
                     raw_windowed, labels_windowed, _ = self.create_training_data(data_all, labels_all, window_length=window_length, step_size=step_size, sub_sample_length=sub_sample_length, clear_outliers=clear_outliers, calc_features=False, keep_positions=keep_positions, padding_left_right=padding_left_right)
                     np.save(filename_raw, raw_windowed)
                     np.save(filename_labels, labels_windowed)

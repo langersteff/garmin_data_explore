@@ -14,13 +14,19 @@ from time import time
 import numpy as np
 import keras.backend as K
 from keras.engine.topology import Layer, InputSpec
-from keras.layers import Dense, Input, concatenate
+from keras.layers import Dense, Input, concatenate, BatchNormalization
 from keras.models import Model
 from keras.optimizers import SGD
 from keras import callbacks
 from keras.initializers import VarianceScaling
 from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
 #import metrics
+
+from numpy.random import seed
+seed(42)
+from tensorflow import set_random_seed
+set_random_seed(42)
 
 
 def autoencoder(dims, act='relu', init='glorot_uniform'):
@@ -137,15 +143,16 @@ class DEC(object):
         self.autoencoder, self.encoder = autoencoder(self.dims, init=init)
 
         if self.feature_dims is None: #DEC
-            clustering_layer = ClusteringLayer(self.n_clusters, name='clustering')(self.encoder.output)
-            self.model = Model(inputs=self.encoder.input, outputs=clustering_layer)
+            self.clustering_layer = ClusteringLayer(self.n_clusters, name='clustering')(self.encoder.output)
+            self.model = Model(inputs=self.encoder.input, outputs=self.clustering_layer)
         else: # FIDEC
+            normalized = BatchNormalization()(self.encoder.output)
             self.handcrafted_features = Input(shape=self.feature_dims, name='handcrafted_features')
-            self.concat_layer = concatenate([self.encoder.output, self.handcrafted_features])
+            self.concat_layer = concatenate([normalized, self.handcrafted_features])
             self.clustering_layer = ClusteringLayer(self.n_clusters, name='clustering')(self.concat_layer)
-            self.model = Model(inputs=[self.encoder.input, self.handcrafted_features], outputs=clustering_layer)
+            self.model = Model(inputs=[self.encoder.input, self.handcrafted_features], outputs=self.clustering_layer)
 
-    def pretrain(self, x, y=None, optimizer='adam', epochs=200, batch_size=256, save_dir='results/temp', verbose=False):
+    def pretrain(self, x, y=None, optimizer='adam', epochs=200, batch_size=256, save_dir='results/temp'):
         print('...Pretraining...')
         self.autoencoder.compile(optimizer=optimizer, loss='mse')
 
@@ -175,7 +182,7 @@ class DEC(object):
 
         # begin pretraining
         t0 = time()
-        self.autoencoder.fit(x, x, batch_size=batch_size, epochs=epochs, callbacks=cb, verbose=verbose)
+        self.autoencoder.fit(x, x, batch_size=batch_size, epochs=epochs, callbacks=cb, verbose=False)
         print('Pretraining time: %ds' % round(time() - t0))
         self.autoencoder.save_weights(save_dir + '/ae_weights.h5')
         print('Pretrained weights are saved to %s/ae_weights.h5' % save_dir)
@@ -199,12 +206,13 @@ class DEC(object):
     def compile(self, optimizer='sgd', loss='kld'):
         self.model.compile(optimizer=optimizer, loss=loss)
 
-    def fit(self, inputs, y=None, maxiter=2e4, batch_size=256, tol=1e-3,
-            update_interval=140, save_dir='./results/temp', verbose=False):
+    def fit(self, inputs, y=None, maxiter=2e4, batch_size=256, tol=1e-3, update_interval=140, save_dir='./results/temp'):
 
-        if len(inputs) <= 1:
+        fit_fidec = isinstance(inputs, list)
+
+        if not fit_fidec: #DEC
             x = inputs
-        else:
+        else: #FIDEC
             x = inputs[0]
             features = inputs[1]
 
@@ -216,7 +224,7 @@ class DEC(object):
         t1 = time()
         print('Initializing cluster centers with k-means.')
         kmeans = KMeans(n_clusters=self.n_clusters, n_init=20)
-        if len(inputs) <= 1: #DEC
+        if not fit_fidec: #DEC
             y_pred = kmeans.fit_predict(self.encoder.predict(x))
         else: #FIDEC
             y_pred = kmeans.fit_predict(np.hstack((self.encoder.predict(x), features)))
@@ -236,7 +244,7 @@ class DEC(object):
         index_array = np.arange(x.shape[0])
         for ite in range(int(maxiter)):
             if ite % update_interval == 0:
-                if len(inputs) <= 1: #DEC
+                if not fit_fidec: #DEC
                     q = self.model.predict(x, verbose=0)
                 else: #FIDEC
                     q = self.model.predict(inputs, verbose=0)
@@ -266,22 +274,22 @@ class DEC(object):
             # if index == 0:
             #     np.random.shuffle(index_array)
             idx = index_array[index * batch_size: min((index+1) * batch_size, x.shape[0])]
-            if len(inputs) <= 1: #DEC
+            if not fit_fidec: #DEC
                 loss = self.model.train_on_batch(x=x[idx], y=p[idx])
             else: #FIDEC
                 loss = self.model.train_on_batch(x=[x[idx], features[idx]], y=p[idx])
             index = index + 1 if (index + 1) * batch_size <= x.shape[0] else 0
 
             # save intermediate model
-            if ite % save_interval == 0:
-                print('saving model to:', save_dir + '/DEC_model_' + str(ite) + '.h5')
+            if save_interval > 0 and ite % save_interval == 0:
+                #print('saving model to:', save_dir + '/DEC_model_' + str(ite) + '.h5')
                 self.model.save_weights(save_dir + '/DEC_model_' + str(ite) + '.h5')
 
             ite += 1
 
         # save the trained model
         logfile.close()
-        print('saving model to:', save_dir + '/DEC_model_final.h5')
+        #print('saving model to:', save_dir + '/DEC_model_final.h5')
         self.model.save_weights(save_dir + '/DEC_model_final.h5')
 
         return y_pred
