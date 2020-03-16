@@ -22,6 +22,7 @@ from geopy.distance import geodesic
 from sklearn import metrics
 import os
 from time import time
+from sklearn.preprocessing import normalize
 
 
 class MtbClassifier:
@@ -184,9 +185,9 @@ class MtbClassifier:
                                 mtb_data_provider,
                                 force_overwrite = False,
                                 prefix = '',
-                                run_dec=True,
-                                run_fidec=True,
-                                run_classical=True,
+                                run_dec=False,
+                                run_fidec=False,
+                                run_classical=False,
                                 dec_dims=[500, 500, 2000, 10],
                                 window_lengths=[100,200],
                                 sub_sample_lengths=[50,100],
@@ -218,16 +219,11 @@ class MtbClassifier:
                     filename_features = "data/%s_features.npy" % data_prefix
                     filename_labels = "data/%s_labels.npy" % data_prefix
 
-                    # TODO: Only use Acc values in raw data?
-
                     # Load pre saved samples from npy files
-                    data_raw = np.load(filename_raw)[:, :, :-2] # The last two values are latitude, longitude
-                    print("data_raw", data_raw.shape)
+                    data_raw = np.load(filename_raw)[:, :, :3]
                     data_raw_flat = data_raw.reshape((data_raw.shape[0], data_raw.shape[1] * data_raw.shape[2]))
-                    print("data_raw_flat", data_raw_flat.shape)
                     feature_file = np.load(filename_features)
-                    data_features = feature_file[:, :-2]
-                    print("data_features", data_features.shape)
+                    data_features = feature_file[:, :-2] # The last two values are latitude, longitude
                     null_features = np.zeros(data_features.shape)
                     dec_dims = np.hstack((data_raw_flat.shape[-1], dec_dims))
 
@@ -288,8 +284,8 @@ class MtbClassifier:
                             print("y_pred", np.unique(y_pred, return_counts=True))
                             np.save(filename_y_pred_fidec, y_pred)
 
-                        fig1 = figure(1, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                        fig1.suptitle('FIDEC', fontsize=20)
+                        fig2 = figure(1, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
+                        fig2.suptitle('FIDEC', fontsize=20)
                         gdf = GeoDataFrame(geometry=geometry)
                         gdf.plot(c=y_pred, figsize=(20, 30))
 
@@ -307,7 +303,7 @@ class MtbClassifier:
                             np.save(filename_y_pred_classical, y_pred)
 
                         fig3 = figure(3, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                        fig1.suptitle('Classical Clustering', fontsize=20)
+                        fig3.suptitle('Classical Clustering', fontsize=20)
                         gdf = GeoDataFrame(geometry=geometry)
                         gdf.plot(c=y_pred, figsize=(20, 30))
 

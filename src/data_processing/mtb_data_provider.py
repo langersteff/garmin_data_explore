@@ -147,12 +147,7 @@ class MtbDataProvider:
 
             result.append(feature_vector)
 
-        # Normalize all data despite the LAT LNG corrdinates
-        result = np.array(result)
-        normalized_features = normalize(result[:, :-2], axis=0)
-        result = np.hstack((normalized_features, result[:, -2:]))
-
-        return result
+        return np.array(result)
 
 
     # Find the biggest heading change per smallest distance (radius) within the slices
@@ -244,30 +239,32 @@ class MtbDataProvider:
 
         if calc_features:
             data_windowed = self.calculate_features(data_windowed, step_size, sub_sample_length, keep_positions=keep_positions)
-        elif padding_left_right > 0:
+
+        if padding_left_right > 0:
             for i in range(padding_left_right):
                 data_windowed = np.insert(data_windowed, 0, 0, axis=1)
                 data_windowed = np.insert(data_windowed, -1, 0, axis=1)
 
-        if clear_outliers == False:
-            return np.array(data_windowed), np.array(labels_windowed), None
+        result = [np.array(data_windowed), np.array(labels_windowed), None]
 
-        knn = KNN(contamination=.20, n_neighbors=10, method='mean', radius=1.0)
-        knn.fit(data_windowed)
+        if clear_outliers:
+            knn = KNN(contamination=.20, n_neighbors=10, method='mean', radius=1.0)
+            knn.fit(data_windowed)
 
-        # get outlier scores
-        outlier_pred = knn.predict(data_windowed)
-        cleared_data= []
-        cleared_labels = []
+            # get outlier scores
+            outlier_pred = knn.predict(data_windowed)
+            cleared_data= []
+            cleared_labels = []
 
-        for i in range(len(outlier_pred)):
-            # If it's not an outlier add it to the resulting array
-            if outlier_pred[i] == 0:
-                cleared_data.append(data_windowed[i])
-                cleared_labels.append(labels_windowed[i])
+            for i in range(len(outlier_pred)):
+                # If it's not an outlier add it to the resulting array
+                if outlier_pred[i] == 0:
+                    cleared_data.append(data_windowed[i])
+                    cleared_labels.append(labels_windowed[i])
 
+            result = [np.array(cleared_data), np.array(cleared_labels), knn]
 
-        return [np.array(cleared_data), np.array(cleared_labels), knn]
+        return result
 
     def evenly_oversample(self, X, y):
         X_result = []
@@ -298,7 +295,7 @@ class MtbDataProvider:
 
         return X_result, y_result
 
-    def prepare_raw_data(self, files, columns, location_based_label_files=None, speed_threshold=1, folder='data', transpose=False, fetch_from_apis=False, force_overwrite=True):
+    def prepare_raw_data(self, files, columns, location_based_label_files=None, speed_threshold=1, folder='data', fetch_from_apis=False, force_overwrite=True):
         print("Preparing raw data...")
 
         results = []
@@ -312,13 +309,7 @@ class MtbDataProvider:
             data = self.convert_and_read_fit_file(file_name)
             data = self.filter_data(data, speed_threshold=speed_threshold)
             data = self.split_hd_values(data)
-            data = np.array(self.get_values_for(data, columns))
-
-            normalized_data = normalize(data[:-2, :], axis=1) # Normalize data despite latitude longitude
-            data = np.vstack((normalized_data, data[-2:, :]))
-
-            if transpose:
-                data = data.T
+            data = np.array(self.get_values_for(data, columns)).T
 
             results.append(data)
 
@@ -334,10 +325,9 @@ class MtbDataProvider:
                     np.save(label_file_name, labels)
                 resulting_labels.append(labels)
 
-            if transpose:
-                concatenated = np.concatenate((concatenated, data)) if concatenated is not None else data
-                if location_based_label_files is not None:
-                    concatenated_labels = np.hstack((concatenated_labels, labels)) if concatenated_labels is not None else labels
+            concatenated = np.concatenate((concatenated, data)) if concatenated is not None else data
+            if location_based_label_files is not None:
+                concatenated_labels = np.hstack((concatenated_labels, labels)) if concatenated_labels is not None else labels
 
         results.append(concatenated)
         resulting_labels.append(concatenated_labels)
@@ -389,10 +379,8 @@ class MtbDataProvider:
                              window_lengths = [100, 200],
                              sub_sample_lengths = [25, 50],
                              step_size = .25,
+                             norm='l2',
                              force_overwrite=True,
-                             clear_outliers = False,
-                             calc_features = True,
-                             keep_positions = True,
                              auto_padd_left_right=False,
                              speed_threshold = .3):
 
@@ -403,7 +391,7 @@ class MtbDataProvider:
             data_all = np.load(filename_data_all + '.npy')
             labels_all = np.load(filename_labels_all + '.npy')
         else:
-            data_all, labels_all = self.prepare_raw_data(files, columns, speed_threshold=speed_threshold, location_based_label_files=location_based_label_files, transpose=True)
+            data_all, labels_all = self.prepare_raw_data(files, columns, speed_threshold=speed_threshold, location_based_label_files=location_based_label_files)
             data_all = data_all[-1]
             labels_all = labels_all[-1]
             np.save(filename_data_all, data_all)
@@ -419,15 +407,33 @@ class MtbDataProvider:
                 filename_labels = "data/%s_%s_%s_labels" % (prefix, str(window_length),str(sub_sample_length))
 
                 if not os.path.isfile(filename_raw) or  not os.path.isfile(filename_labels) or force_overwrite:
-                    padding_left_right = int((window_length%4)/2) if auto_padd_left_right else 0
-                    raw_windowed, labels_windowed, _ = self.create_training_data(data_all, labels_all, window_length=window_length, step_size=step_size, sub_sample_length=sub_sample_length, clear_outliers=clear_outliers, calc_features=False, keep_positions=keep_positions, padding_left_right=padding_left_right)
+                    data_for_raw = normalize(data_all[:, :-3], axis=0, norm=norm) # Normalize data despite heading, latitude, longitude
+                    #padding_left_right = int((window_length%4)/2) if auto_padd_left_right else 0
+                    raw_windowed, labels_windowed, _ = self.create_training_data(
+                        data_for_raw,
+                        labels_all,
+                        window_length=window_length,
+                        step_size=step_size,
+                        sub_sample_length=sub_sample_length,
+                        calc_features=False,
+                        keep_positions=False)#, padding_left_right=padding_left_right)
+
                     np.save(filename_raw, raw_windowed)
                     np.save(filename_labels, labels_windowed)
 
                 if not os.path.isfile(filename_features) or force_overwrite:
-                    features_windowed, _, _ = self.create_training_data(data_all, labels_all, window_length=window_length, step_size=step_size, sub_sample_length=sub_sample_length, clear_outliers=clear_outliers, calc_features=True, keep_positions=keep_positions)
-                    np.save(filename_features, features_windowed)
+                    features_windowed, _, _ = self.create_training_data(
+                        data_all,
+                        labels_all,
+                        window_length=window_length,
+                        step_size=step_size,
+                        sub_sample_length=sub_sample_length,
+                        calc_features=True,
+                        keep_positions=True)
 
+                    normalized_features = normalize(features_windowed[:, :-2], axis=0, norm=norm)# Normalize data despite latitude, longitude
+                    features_windowed = np.hstack((normalized_features, features_windowed[:, -2:]))
+                    np.save(filename_features, features_windowed)
 
                 print("raw:", raw_windowed.shape)
                 print("features:", features_windowed.shape)
