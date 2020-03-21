@@ -21,6 +21,7 @@ import math
 from tqdm import tqdm_notebook as tqdm
 from tempfile import TemporaryFile
 import os.path
+from sklearn.preprocessing import StandardScaler
 
 LATITUDE_KEY = 'position_lat'
 LONGITUDE_KEY = 'position_long'
@@ -407,8 +408,11 @@ class MtbDataProvider:
                 filename_labels = "data/%s_%s_%s_labels" % (prefix, str(window_length),str(sub_sample_length))
 
                 if not os.path.isfile(filename_raw) or  not os.path.isfile(filename_labels) or force_overwrite:
-                    data_for_raw = normalize(data_all[:, :-3], axis=0, norm=norm) # Normalize data despite heading, latitude, longitude
-                    #padding_left_right = int((window_length%4)/2) if auto_padd_left_right else 0
+
+                    #data_for_raw = normalize(data_all[:, :-3], axis=0, norm=norm) # Normalize data despite heading, latitude, longitude
+                    #data_for_raw = StandardScaler().fit_transform(data_all[:, :-3])
+
+                    padding_left_right = int((window_length%4)/2) if auto_padd_left_right else 0
                     raw_windowed, labels_windowed, _ = self.create_training_data(
                         data_for_raw,
                         labels_all,
@@ -416,7 +420,8 @@ class MtbDataProvider:
                         step_size=step_size,
                         sub_sample_length=sub_sample_length,
                         calc_features=False,
-                        keep_positions=False)#, padding_left_right=padding_left_right)
+                        keep_positions=False,
+                        padding_left_right=padding_left_right)
 
                     np.save(filename_raw, raw_windowed)
                     np.save(filename_labels, labels_windowed)

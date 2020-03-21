@@ -11,6 +11,11 @@ from keras.layers import Concatenate, Input, concatenate
 from keras.optimizers import SGD
 from sklearn.model_selection import KFold
 from DEC.DEC import DEC
+from .clusterer_FIDCEC import ClustererFIDCEC
+from .clusterer_DCEC import ClustererDCEC
+from .clusterer_DEC import ClustererDEC
+from .clusterer_FIDEC import ClustererFIDEC
+from .clusterer_Classical import ClustererClassical
 import geopandas as gpd
 from geopandas import GeoDataFrame
 import matplotlib.pyplot as plt
@@ -187,7 +192,13 @@ class MtbClassifier:
                                 prefix = '',
                                 run_dec=False,
                                 run_fidec=False,
-                                run_classical=False,
+                                run_dcec=False,
+                                run_fidcec=False,
+                                run_drec=False,
+                                run_fidrec=False,
+                                run_classical_raw=False,
+                                run_classical_raw_fi=False,
+                                run_classical_features=False,
                                 dec_dims=[500, 500, 2000, 10],
                                 window_lengths=[100,200],
                                 sub_sample_lengths=[50,100],
@@ -213,7 +224,6 @@ class MtbClassifier:
                     print("clusters:", num_clusters)
 
                     data_prefix = "%s_%s_%s" % (prefix, str(window_length), str(sub_sample_length))
-                    experiment_prefix = "%s_%s" % (data_prefix, str(num_clusters))
 
                     filename_raw = "data/%s_raw.npy" % data_prefix
                     filename_features = "data/%s_features.npy" % data_prefix
@@ -224,115 +234,45 @@ class MtbClassifier:
                     data_raw_flat = data_raw.reshape((data_raw.shape[0], data_raw.shape[1] * data_raw.shape[2]))
                     feature_file = np.load(filename_features)
                     data_features = feature_file[:, :-2] # The last two values are latitude, longitude
-                    null_features = np.zeros(data_features.shape)
-                    dec_dims = np.hstack((data_raw_flat.shape[-1], dec_dims))
 
                     y_true = np.load(filename_labels)
-                    print("y_true", np.unique(y_true, return_counts=True))
+                    ClustererClassical().plot_y_pred(y_true, feature_file[:, -1], feature_file[:, -2], "Ground truth")
 
-                    fig_truth = figure(4, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                    fig_truth.suptitle('Ground Truth', fontsize=20)
-                    geometry = gpd.points_from_xy(feature_file[:, -1], feature_file[:, -2])
-                    gdf = GeoDataFrame(geometry=geometry)
-                    gdf.plot(c=y_true, figsize=(20, 30))
+                    print_summary, print_unique_pred, plot_pred, save_pred = False, True, True, True
 
                     if run_dec:
-                        print("\n---- DEC ----")
-                        filename_y_pred_dec = "evaluation/%s_dec_y_pred" % experiment_prefix
-
-                        if os.path.isfile(filename_y_pred_dec + '.npy') and not force_overwrite:
-                            y_pred = np.load(filename_y_pred_dec + '.npy')
-                        else:
-                            dec = DEC(dims=dec_dims, n_clusters=num_clusters, init=init)
-                            dec.pretrain(x=data_raw_flat, y=None, optimizer=pretrain_optimizer,
-                            epochs=pretrain_epochs, batch_size=batch_size,
-                            save_dir=save_dir)
-
-                            dec.model.summary()
-                            t0 = time()
-                            dec.compile(optimizer=SGD(0.01, 0.9), loss='kld')
-                            y_pred = dec.fit(data_raw_flat, y=None, tol=tol, maxiter=maxiter, batch_size=batch_size,
-                                            update_interval=update_interval, save_dir=save_dir)
-                            print("y_pred", np.unique(y_pred, return_counts=True))
-                            np.save(filename_y_pred_dec, y_pred)
-
-                        fig1 = figure(1, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                        fig1.suptitle('DEC', fontsize=20)
-                        gdf = GeoDataFrame(geometry=geometry)
-                        gdf.plot(c=y_pred, figsize=(20, 30))
-
-                        self.save_scores(filename_y_pred_dec + "_score", y_true, y_pred, data_raw_flat)
+                        dec = ClustererDEC(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
+                        dec.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'dec')
+                        dec.fit_predict(data_raw_flat, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
 
                     if run_fidec:
-                        print("\n---- FIDEC ----")
-                        filename_y_pred_fidec = "evaluation/%s_fidec_y_pred" % experiment_prefix
+                        fidec = ClustererFIDEC(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
+                        fidec.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'fidec')
+                        fidec.fit_predict([data_raw_flat, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
 
-                        if os.path.isfile(filename_y_pred_fidec + '.npy') and not force_overwrite:
-                            y_pred = np.load(filename_y_pred_fidec + '.npy')
-                        else:
-                            fidec = DEC(dims=dec_dims, feature_dims=data_features[0].shape, n_clusters=num_clusters, init=init)
-                            fidec.pretrain(x=data_raw_flat, y=None, optimizer=pretrain_optimizer,
-                            epochs=pretrain_epochs, batch_size=batch_size,
-                            save_dir=save_dir)
+                    if run_dcec:
+                        dec = ClustererDCEC(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
+                        dec.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'dcec')
+                        dec.fit_predict(data_raw, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
 
-                            fidec.model.summary()
-                            t0 = time()
-                            fidec.compile(optimizer=SGD(0.01, 0.9), loss='kld')
-                            fidec_input = [data_raw_flat, data_features]
-                            y_pred = fidec.fit(fidec_input, y=None, tol=tol, maxiter=maxiter, batch_size=batch_size,
-                                            update_interval=update_interval, save_dir=save_dir)
-                            print("y_pred", np.unique(y_pred, return_counts=True))
-                            np.save(filename_y_pred_fidec, y_pred)
+                    if run_fidcec:
+                        fidec = ClustererFIDCEC(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
+                        fidec.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'fidcec')
+                        fidec.fit_predict([data_raw, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
 
-                        fig2 = figure(1, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                        fig2.suptitle('FIDEC', fontsize=20)
-                        gdf = GeoDataFrame(geometry=geometry)
-                        gdf.plot(c=y_pred, figsize=(20, 30))
+                    if run_classical_raw:
+                        classical_raw = ClustererClassical(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred, pca_n_components=data_features.shape[-1])
+                        classical_raw.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'classical_raw')
+                        classical_raw.fit_predict(data_raw_flat, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
 
-                        self.save_scores(filename_y_pred_fidec + "_score", y_true, y_pred, data_raw_flat)
+                    if run_classical_raw_fi:
+                        classical_fi = ClustererClassical(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred, pca_n_components=data_features.shape[-1])
+                        classical_fi.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'classical_fraw_fi')
+                        classical_fi.fit_predict([data_raw, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
 
-                    if run_classical:
-                        print("\n---- Classical SciKit Clustering on Features ----")
-                        filename_y_pred_classical = "evaluation/%s_classical_y_pred" % experiment_prefix
+                    if run_classical_features:
+                        classical_fi = ClustererClassical(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
+                        classical_fi.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'classical_features')
+                        classical_fi.fit_predict(data_features, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
 
-                        if os.path.isfile(filename_y_pred_classical + '.npy') and not force_overwrite:
-                            y_pred = np.load(filename_y_pred_classical + '.npy')
-                        else:
-                            clusterer = KMeans(n_clusters=num_clusters)
-                            y_pred = clusterer.fit_predict(data_features)
-                            np.save(filename_y_pred_classical, y_pred)
-
-                        fig3 = figure(3, figsize=(15, 5), dpi=80, facecolor='w', edgecolor='k')
-                        fig3.suptitle('Classical Clustering', fontsize=20)
-                        gdf = GeoDataFrame(geometry=geometry)
-                        gdf.plot(c=y_pred, figsize=(20, 30))
-
-                        self.save_scores(filename_y_pred_classical + "_score", y_true, y_pred, data_raw_flat)
-
-                    # TODO: This doesn't properly save plots somehow
-                    filename_fidec = "evaluation/%s_fidec_compare.png" % experiment_prefix
-                    plt.savefig(filename_fidec)
-                    plt.show()
-
-    def save_scores(self, filename, y_true, y_pred, data):
-        scores = []
-        scores.append(['score_name', 'score_result'])
-        scores.append(['adjusted_rand_score', metrics.adjusted_rand_score(y_true, y_pred)])
-        scores.append(['adjusted_mutual_info_score', metrics.adjusted_mutual_info_score(y_true, y_pred)])
-        scores.append(['homogeneity_score', metrics.homogeneity_score(y_true, y_pred)])
-        scores.append(['completeness_score', metrics.completeness_score(y_true, y_pred)])
-        scores.append(['v_measure_score', metrics.v_measure_score(y_true, y_pred)])
-        scores.append(['fowlkes_mallows_score', metrics.fowlkes_mallows_score(y_true, y_pred)])
-
-        if len(np.unique(y_pred, return_counts=True)[0]) > 1:
-            scores.append(['silhouette_score', metrics.silhouette_score(data, y_pred)])
-            scores.append(['davies_bouldin_score', metrics.davies_bouldin_score(data, y_pred)])
-            scores.append(['calinski_harabasz_score', metrics.calinski_harabasz_score(data, y_pred)])
-        else:
-            scores.append(['silhouette_score', 0])
-            scores.append(['davies_bouldin_score', 0])
-            scores.append(['calinski_harabasz_score', 0])
-
-        print(scores)
-
-        np.savetxt(filename + ".csv", scores, fmt='%s,%s', delimiter=",")
+                    # TODO: Aply StandardScaler instead of normalization!

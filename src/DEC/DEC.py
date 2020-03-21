@@ -150,6 +150,7 @@ class DEC(object):
             self.handcrafted_features = Input(shape=self.feature_dims, name='handcrafted_features')
             self.concat_layer = concatenate([normalized, self.handcrafted_features])
             self.clustering_layer = ClusteringLayer(self.n_clusters, name='clustering')(self.concat_layer)
+            # TODO: Would having the decoder as output as well keep the net training the autoencoder?
             self.model = Model(inputs=[self.encoder.input, self.handcrafted_features], outputs=self.clustering_layer)
 
     def pretrain(self, x, y=None, optimizer='adam', epochs=200, batch_size=256, save_dir='results/temp'):
