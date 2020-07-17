@@ -2,3 +2,14 @@ FitSDKRelease*
 evaluation/*
 results/*
 data/*
+*.mp4
+*.csv
+node_modules/*
+src/data_processing/__pycache__/*
+src/CAEL2/__pycache__/*
+src/data_processing/__pycache__/*
+**/__pycache__/**
+.ipynb_checkpoints/*
+.ipynb_checkpoints
+.vscode/*
+package-lock.json

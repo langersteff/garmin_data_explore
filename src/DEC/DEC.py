@@ -23,12 +23,6 @@ from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 #import metrics
 
-from numpy.random import seed
-seed(42)
-from tensorflow import set_random_seed
-set_random_seed(42)
-
-
 def autoencoder(dims, act='relu', init='glorot_uniform'):
     """
     Fully connected auto-encoder model, symmetric.
@@ -131,7 +125,7 @@ class DEC(object):
                  alpha=1.0,
                  init='glorot_uniform'):
 
-        super(DEC, self).__init__()
+        super().__init__()
 
         self.dims = dims
         self.feature_dims = feature_dims
@@ -146,9 +140,8 @@ class DEC(object):
             self.clustering_layer = ClusteringLayer(self.n_clusters, name='clustering')(self.encoder.output)
             self.model = Model(inputs=self.encoder.input, outputs=self.clustering_layer)
         else: # FIDEC
-            normalized = BatchNormalization()(self.encoder.output)
             self.handcrafted_features = Input(shape=self.feature_dims, name='handcrafted_features')
-            self.concat_layer = concatenate([normalized, self.handcrafted_features])
+            self.concat_layer = concatenate([self.encoder.output, self.handcrafted_features])
             self.clustering_layer = ClusteringLayer(self.n_clusters, name='clustering')(self.concat_layer)
             # TODO: Would having the decoder as output as well keep the net training the autoencoder?
             self.model = Model(inputs=[self.encoder.input, self.handcrafted_features], outputs=self.clustering_layer)
@@ -164,7 +157,7 @@ class DEC(object):
                 def __init__(self, x, y):
                     self.x = x
                     self.y = y
-                    super(PrintACC, self).__init__()
+                    super().__init__()
 
                 def on_epoch_end(self, epoch, logs=None):
                     if int(epochs/10) != 0 and epoch % int(epochs/10) != 0:

@@ -22,6 +22,9 @@ from tqdm import tqdm_notebook as tqdm
 from tempfile import TemporaryFile
 import os.path
 from sklearn.preprocessing import StandardScaler
+from scipy import stats
+from collections import Counter
+
 
 LATITUDE_KEY = 'position_lat'
 LONGITUDE_KEY = 'position_long'
@@ -95,10 +98,12 @@ class MtbDataProvider:
             results.append(result)
         return results
 
-    def calculate_features(self, samples, step_size, sub_sample_length, keep_positions=False):
+    def calculate_features(self, samples, step_size, sub_sample_length, feature_thresholds, keep_positions=False):
         print("Calculating Features:", samples[0].shape[0], sub_sample_length)
 
         result = []
+
+        lower_thresholds, upper_thresholds = feature_thresholds
 
         ACC_X = 0
         ACC_Y = 1
@@ -115,32 +120,37 @@ class MtbDataProvider:
             sample_slices, _ = self.slice_into_windows(sample, window_length=sub_sample_length, step_size=step_size)
 
             feature_vector = []
-            # feature_vector.append(sample[:, ACC_X].mean())
-            # feature_vector.append(sample[:, ACC_Y].mean())
-            # feature_vector.append(sample[:, ACC_Z].mean())
-            # feature_vector.append(sample[:, ACC_X].max())
-            # feature_vector.append(sample[:, ACC_Y].max())
-            # feature_vector.append(sample[:, ACC_Z].max())
 
-            feature_vector.append(sample[:, ACC_X:ACC_Z].mean())
-            feature_vector.append(sample[:, ACC_X:ACC_Z].max())
-            feature_vector.append(sample[:, ACC_X:ACC_Z].min())
-            #feature_vector.append(sample[:, ACC_X:ACC_Z].std())
+            for data_column in [ACC_X, ACC_Y, ACC_Z, SPEED]:
+                # Min, Max, Means
+                #feature_vector.append(sample[:, data_column].min()) #TODO: This might be unneccessary, because outliers
+                #feature_vector.append(sample[:, data_column].max()) #TODO: This might be unneccessary, because outliers
+                #feature_vector.append(sample[:, data_column].mean()) # TODO: The mean should be 0 shouldn't it?
+                feature_vector.append(np.median(sample[:, data_column]))
+
+
+                # Feature Templates: _ points above or below percentile
+                feature_vector.append(np.sum(sample[:, data_column] > upper_thresholds[data_column]))
+                feature_vector.append(np.sum(sample[:, data_column] < lower_thresholds[data_column]))
 
             # max altitude change, in sub samples
-            feature_vector.append(np.max([sample_slices[:, :, ALTITUDE].max(axis=1) - sample_slices[:, :, ALTITUDE].min(axis=1)]))
+            altitude_changes = [sample_slices[:, :, ALTITUDE].max(axis=1) - sample_slices[:, :, ALTITUDE].min(axis=1)]
+            feature_vector.append(np.max(altitude_changes))
 
             # max speed change, in sub samples
-            feature_vector.append(np.max([sample_slices[:, :, SPEED].max(axis=1) - sample_slices[:, :, SPEED].min(axis=1)]))
-
-            # mean speed on the trail
-            feature_vector.append(sample[:, SPEED].mean()) # speed mean
+            speed_changes = [sample_slices[:, :, SPEED].max(axis=1) - sample_slices[:, :, SPEED].min(axis=1)]
+            feature_vector.append(np.max(speed_changes))
 
             # max heading change per distance
             feature_vector.append(self.calc_max_heading_change_per_distance(sample_slices, LAT, LNG, HEADING))
 
-            # max heading change, in sub samples
-            #feature_vector.append(np.max([sample_slices[:, :, HEADING].max(axis=1) - sample_slices[:, :, HEADING].min(axis=1)]))
+            # TODO: How to do this accross all samplesand recordings???
+            # _ subsamples steeper than upper threshold
+            # _ subsamples less steep than lower threshold
+            # _ subsamples speed change larger than threshold
+            # _ subsamples speed change lower than threshold
+            # _ subsamples heading changes tighter than threshold
+            # _ subsamples heading changes wider than threshold
 
             if keep_positions:
                 feature_vector.append(sample[:, LAT].mean())
@@ -222,24 +232,26 @@ class MtbDataProvider:
             label = 0
             if i + window_length > data.shape[0]:
                 window = data[-window_length:,  :]
+                label = Counter(labels[-window_length:]).most_common()[0][0]
                 #label = np.argmax(np.bincount(labels[-window_length:]))
-                label = round(np.mean(labels[-window_length:]))
+                #label = round(np.mean(labels[-window_length:]))
             else:
                 window = data[i:i + window_length, :]
+                label = Counter(labels[i:i + window_length]).most_common()[0][0]
                 #label = np.argmax(np.bincount(labels[i:i + window_length]))
-                label = round(np.mean(labels[i:i + window_length]))
+                #label = round(np.mean(labels[i:i + window_length]))
             windows.append(window)
             windowed_labels.append(label)
 
         return np.array(windows), np.array(windowed_labels)
 
 
-    def create_training_data(self, data, labels, window_length=50, step_size=.25, sub_sample_length=25, clear_outliers=False, calc_features=False, keep_positions=False, padding_left_right=0):
+    def create_training_data(self, data, labels, window_length=50, step_size=.25, sub_sample_length=25, clear_outliers=False, calc_features=False, keep_positions=False, padding_left_right=0, feature_thresholds = None):
         # slice into sliding windows
         data_windowed, labels_windowed = self.slice_into_windows(data, labels, window_length=window_length, step_size=step_size)
 
         if calc_features:
-            data_windowed = self.calculate_features(data_windowed, step_size, sub_sample_length, keep_positions=keep_positions)
+            data_windowed = self.calculate_features(data_windowed, step_size, sub_sample_length, feature_thresholds, keep_positions=keep_positions)
 
         if padding_left_right > 0:
             for i in range(padding_left_right):
@@ -296,21 +308,23 @@ class MtbDataProvider:
 
         return X_result, y_result
 
-    def prepare_raw_data(self, files, columns, location_based_label_files=None, speed_threshold=1, folder='data', fetch_from_apis=False, force_overwrite=True):
+    def prepare_raw_data(self, files, columns, location_based_label_files=None, speed_threshold=1, fetch_from_apis=False, force_overwrite=True, min_cluster_size=3):
         print("Preparing raw data...")
 
         results = []
         resulting_labels = []
-        concatenated = None
-        concatenated_labels = None
 
         for i in range(len(files)):
             file = files[i]
-            file_name = folder + '/' + file
+            file_name = 'data/' + file
             data = self.convert_and_read_fit_file(file_name)
             data = self.filter_data(data, speed_threshold=speed_threshold)
             data = self.split_hd_values(data)
             data = np.array(self.get_values_for(data, columns)).T
+
+
+            # TODO: Check if there is an mp4 file with the respective file_name
+            # If so: Merge the values to the raw data
 
             results.append(data)
 
@@ -322,25 +336,40 @@ class MtbDataProvider:
                     labels = np.load(label_file_name + '.npy')
                 else:
                     location_based_label_file = location_based_label_files[i]
-                    labels = self.label_data(data, location_based_label_file)
+                    labels = self.label_data(data, location_based_label_file, min_cluster_size=min_cluster_size)
                     np.save(label_file_name, labels)
                 resulting_labels.append(labels)
-
-            concatenated = np.concatenate((concatenated, data)) if concatenated is not None else data
-            if location_based_label_files is not None:
-                concatenated_labels = np.hstack((concatenated_labels, labels)) if concatenated_labels is not None else labels
-
-        results.append(concatenated)
-        resulting_labels.append(concatenated_labels)
 
         print("Done")
         return results, resulting_labels
 
-    def label_data(self, data, labels_file_name, distance_threshold = 50, accuracy_threshold=20):
+    def label_data(self, data, labels_file_name, distance_threshold = 50, accuracy_threshold=20, min_cluster_size=3):
         labels = []
         labels_csv = pd.read_csv('data/' + labels_file_name + '.csv')
 
         print("Labeling data by comparing locations ...")
+
+        # Cleanup Labels
+        labels_data = []
+        last_coordinates = (0,0)
+        for value_set in labels_csv.values:
+            coordinates = (value_set[0], value_set[1])
+            # Join the labels to one string
+            new_value_set = np.hstack([value_set[:2], '-'.join(value_set[2:5]), value_set[-1]])
+
+            # When changing labels, the app writes each change. Just take the latest label for one position in this case
+            if coordinates == last_coordinates:
+                labels_data[-1] = new_value_set
+            else:
+                labels_data.append(new_value_set)
+                last_coordinates = coordinates
+
+        labels_data = np.array(labels_data)
+        unique_labels, counts = np.unique(labels_data[:, 2], return_counts=True)
+        # Get rid of clusters smaller than min_cluster_size
+        unique_labels = unique_labels[counts >= min_cluster_size]
+        labels_data = list(filter(lambda dic: dic[2] in unique_labels, labels_data))
+        print("RESULTING NUMBERS OF CLUSTERS: " + str(len(unique_labels)))
 
         last_label = 0
         last_location = None
@@ -356,15 +385,15 @@ class MtbDataProvider:
             smallest_distance_label = (99999, 0)
 
             # Iterate through labels
-            for index, label_row in labels_csv.iterrows():
-                label_location = (label_row['latitude'], label_row['longitude'])
+            for label_data in labels_data:
+                label_location = (label_data[0], label_data[1])
 
                 # Calculate distance between label and sample
                 distance = geodesic(sample_location, label_location).meters
 
                 # Find the smallest distance
-                if distance < distance_threshold and distance < smallest_distance_label[0]:
-                    smallest_distance_label = (distance, label_row['label'])
+                if distance < distance_threshold and distance <= smallest_distance_label[0]:
+                    smallest_distance_label = (distance, label_data[2])
                     last_label = smallest_distance_label[1]
                     last_location = label_location
 
@@ -380,23 +409,18 @@ class MtbDataProvider:
                              window_lengths = [100, 200],
                              sub_sample_lengths = [25, 50],
                              step_size = .25,
-                             norm='l2',
-                             force_overwrite=True,
                              auto_padd_left_right=False,
-                             speed_threshold = .3):
+                             force_overwrite=False,
+                             speed_threshold = .3,
+                             min_cluster_size=3):
 
-        filename_data_all = 'data/' + prefix + '_data_all'
-        filename_labels_all = 'data/' + prefix + '_data_all'
+        filename_prepared_data = '%s_prepared_data' % prefix
 
-        if os.path.isfile(filename_data_all + '.npy') and not force_overwrite:
-            data_all = np.load(filename_data_all + '.npy')
-            labels_all = np.load(filename_labels_all + '.npy')
+        if os.path.isfile(filename_prepared_data + '.npy') and not force_overwrite:
+            data, labels = np.load(filename_prepared_data + '.npy', allow_pickle=True)
         else:
-            data_all, labels_all = self.prepare_raw_data(files, columns, speed_threshold=speed_threshold, location_based_label_files=location_based_label_files)
-            data_all = data_all[-1]
-            labels_all = labels_all[-1]
-            np.save(filename_data_all, data_all)
-            np.save(filename_labels_all, labels_all)
+            data, labels = self.prepare_raw_data(files, columns, speed_threshold=speed_threshold, location_based_label_files=location_based_label_files, min_cluster_size=min_cluster_size)
+            np.save(filename_prepared_data, [data, labels])
 
         for window_length in window_lengths:
             for sub_sample_length in sub_sample_lengths:
@@ -407,15 +431,30 @@ class MtbDataProvider:
                 filename_features = "data/%s_%s_%s_features" % (prefix, str(window_length),str(sub_sample_length))
                 filename_labels = "data/%s_%s_%s_labels" % (prefix, str(window_length),str(sub_sample_length))
 
-                if not os.path.isfile(filename_raw) or  not os.path.isfile(filename_labels) or force_overwrite:
 
-                    #data_for_raw = normalize(data_all[:, :-3], axis=0, norm=norm) # Normalize data despite heading, latitude, longitude
-                    #data_for_raw = StandardScaler().fit_transform(data_all[:, :-3])
+                # Normalize, despite the last three fields (Heading in rad, Latitude, Longitude)
+                raw_scaler = StandardScaler()
+                normalized_concatenated_data = raw_scaler.fit_transform(np.concatenate(data)[:, :-3])
+
+                # Calculate the upper and lower 30 percentiles, which are needed for the features
+                lower_thresholds = np.percentile(normalized_concatenated_data, 30, axis=1)
+                upper_thresholds = np.percentile(normalized_concatenated_data, 70, axis=1)
+
+                raw_windowed, labels_windowed, features_windowed = [], [], []
+
+                #for data_recording in data:
+                for i in range(len(data)):
+
+                    data_recording = data[i]
+                    labels_recording = labels[i]
+
+                    # Normalize, despite the last three fields using the pretrained StandardScaler (Heading in rad, Latitude, Longitude)
+                    data_for_raw = np.hstack((raw_scaler.transform(data_recording[:, :-3]), data_recording[:, -3:]))
 
                     padding_left_right = int((window_length%4)/2) if auto_padd_left_right else 0
-                    raw_windowed, labels_windowed, _ = self.create_training_data(
+                    raw_windowed_recording, labels_windowed_recording, _ = self.create_training_data(
                         data_for_raw,
-                        labels_all,
+                        labels_recording,
                         window_length=window_length,
                         step_size=step_size,
                         sub_sample_length=sub_sample_length,
@@ -423,22 +462,32 @@ class MtbDataProvider:
                         keep_positions=False,
                         padding_left_right=padding_left_right)
 
-                    np.save(filename_raw, raw_windowed)
-                    np.save(filename_labels, labels_windowed)
-
-                if not os.path.isfile(filename_features) or force_overwrite:
-                    features_windowed, _, _ = self.create_training_data(
-                        data_all,
-                        labels_all,
+                    features_windowed_recording, _, _ = self.create_training_data(
+                        data_recording,
+                        labels_recording,
                         window_length=window_length,
                         step_size=step_size,
                         sub_sample_length=sub_sample_length,
+                        feature_thresholds=[lower_thresholds, upper_thresholds],
                         calc_features=True,
                         keep_positions=True)
 
-                    normalized_features = normalize(features_windowed[:, :-2], axis=0, norm=norm)# Normalize data despite latitude, longitude
-                    features_windowed = np.hstack((normalized_features, features_windowed[:, -2:]))
-                    np.save(filename_features, features_windowed)
+                    # Normalize, despite the last two fields (Latitude, Longitude)
+                    feature_scaler = StandardScaler()
+                    features_windowed_recording = np.hstack((feature_scaler.fit_transform(features_windowed_recording[:, :-2]), features_windowed_recording[:, -2:]))
+
+                    raw_windowed.append(raw_windowed_recording)
+                    labels_windowed.append(labels_windowed_recording)
+                    features_windowed.append(features_windowed_recording)
+
+                raw_windowed = np.concatenate(raw_windowed)
+                labels_windowed = np.concatenate(labels_windowed)
+                features_windowed = np.concatenate(features_windowed)
+
+                # Scale and save
+                np.save(filename_raw, raw_windowed)
+                np.save(filename_labels, labels_windowed)
+                np.save(filename_features, features_windowed)
 
                 print("raw:", raw_windowed.shape)
                 print("features:", features_windowed.shape)

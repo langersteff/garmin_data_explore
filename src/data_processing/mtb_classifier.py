@@ -16,6 +16,7 @@ from .clusterer_DCEC import ClustererDCEC
 from .clusterer_DEC import ClustererDEC
 from .clusterer_FIDEC import ClustererFIDEC
 from .clusterer_Classical import ClustererClassical
+from .clusterer_CAEL2 import ClustererCAEL2
 import geopandas as gpd
 from geopandas import GeoDataFrame
 import matplotlib.pyplot as plt
@@ -27,7 +28,7 @@ from geopy.distance import geodesic
 from sklearn import metrics
 import os
 from time import time
-from sklearn.preprocessing import normalize
+from sklearn.preprocessing import normalize, LabelEncoder
 
 
 class MtbClassifier:
@@ -188,7 +189,6 @@ class MtbClassifier:
 
     def train_and_compare_unsupervised_clusterings(self,
                                 mtb_data_provider,
-                                force_overwrite = False,
                                 prefix = '',
                                 run_dec=False,
                                 run_fidec=False,
@@ -199,7 +199,11 @@ class MtbClassifier:
                                 run_classical_raw=False,
                                 run_classical_raw_fi=False,
                                 run_classical_features=False,
+                                run_cael2=False,
+                                run_cael2fi=False,
                                 dec_dims=[500, 500, 2000, 10],
+                                dcec_filters=[32, 64, 128, 10],
+                                cael2_filters=[32, 64, 128, 10],
                                 window_lengths=[100,200],
                                 sub_sample_lengths=[50,100],
                                 nums_clusters=[3],
@@ -230,12 +234,14 @@ class MtbClassifier:
                     filename_labels = "data/%s_labels.npy" % data_prefix
 
                     # Load pre saved samples from npy files
-                    data_raw = np.load(filename_raw)[:, :, :3]
+                    data_raw = np.load(filename_raw)[:, :, :-3]
                     data_raw_flat = data_raw.reshape((data_raw.shape[0], data_raw.shape[1] * data_raw.shape[2]))
                     feature_file = np.load(filename_features)
                     data_features = feature_file[:, :-2] # The last two values are latitude, longitude
 
                     y_true = np.load(filename_labels)
+                    y_true = LabelEncoder().fit_transform(y_true)
+
                     ClustererClassical().plot_y_pred(y_true, feature_file[:, -1], feature_file[:, -2], "Ground truth")
 
                     print_summary, print_unique_pred, plot_pred, save_pred = False, True, True, True
@@ -243,36 +249,44 @@ class MtbClassifier:
                     if run_dec:
                         dec = ClustererDEC(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
                         dec.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'dec')
-                        dec.fit_predict(data_raw_flat, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
+                        dec.fit_predict(data_raw_flat, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true, dec_dims=dec_dims)
 
                     if run_fidec:
                         fidec = ClustererFIDEC(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
                         fidec.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'fidec')
-                        fidec.fit_predict([data_raw_flat, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
+                        fidec.fit_predict([data_raw_flat, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true, dec_dims=dec_dims)
 
                     if run_dcec:
                         dec = ClustererDCEC(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
                         dec.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'dcec')
-                        dec.fit_predict(data_raw, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
+                        dec.fit_predict(data_raw, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true, filters=np.hstack((dcec_filters, data_features.shape[-1])))
 
                     if run_fidcec:
                         fidec = ClustererFIDCEC(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
                         fidec.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'fidcec')
-                        fidec.fit_predict([data_raw, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
+                        fidec.fit_predict([data_raw, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true, filters=dcec_filters)
 
                     if run_classical_raw:
-                        classical_raw = ClustererClassical(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred, pca_n_components=data_features.shape[-1])
+                        classical_raw = ClustererClassical(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
                         classical_raw.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'classical_raw')
-                        classical_raw.fit_predict(data_raw_flat, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
+                        classical_raw.fit_predict(data_raw_flat, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true, pca_n_components=data_features.shape[-1])
 
                     if run_classical_raw_fi:
-                        classical_fi = ClustererClassical(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred, pca_n_components=data_features.shape[-1])
-                        classical_fi.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'classical_fraw_fi')
-                        classical_fi.fit_predict([data_raw, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
+                        classical_fi = ClustererClassical(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
+                        classical_fi.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'classical_raw_fi')
+                        classical_fi.fit_predict([data_raw_flat, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true, pca_n_components=data_features.shape[-1])
 
                     if run_classical_features:
                         classical_fi = ClustererClassical(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
                         classical_fi.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'classical_features')
                         classical_fi.fit_predict(data_features, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true)
 
-                    # TODO: Aply StandardScaler instead of normalization!
+                    if run_cael2:
+                        cael2_raw = ClustererCAEL2(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
+                        cael2_raw.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'cael2')
+                        cael2_raw.fit_predict(data_raw, data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true, filters=np.hstack((cael2_filters, data_features.shape[-1])))
+
+                    if run_cael2fi:
+                        cael2_raw_fi = ClustererCAEL2(print_summary=print_summary, print_unique_pred=print_unique_pred, plot_pred=plot_pred, save_pred=save_pred)
+                        cael2_raw_fi.set_prefixes(prefix, num_clusters, window_length, sub_sample_length, 'cael2fi')
+                        cael2_raw_fi.fit_predict([data_raw, data_features], data_prefix, num_clusters, feature_file[:, -1], feature_file[:, -2], y_true, filters=cael2_filters)

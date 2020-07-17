@@ -6,12 +6,6 @@ import numpy as np
 
 import keras.backend as K
 
-from numpy.random import seed
-seed(42)
-from tensorflow import set_random_seed
-set_random_seed(42)
-
-
 def add_Conv1DTranspose(model, filters, kernel_size, strides=2, padding='same', activation='relu', name=None):
     model.add(Lambda(lambda x: K.expand_dims(x, axis=2)))
     model.add(Conv2DTranspose(filters=filters, kernel_size=(kernel_size, 1), strides=(strides, 1), padding=padding, activation=activation, name=name))
