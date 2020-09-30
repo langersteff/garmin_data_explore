@@ -42,21 +42,21 @@ class MtbDataProvider:
         datav = data.query("Message == 'record'").values
         return datav
 
-    def convert_and_read_gopro_mp4_file(self, filename):
+    def convert_and_read_gopro_mp4_file(self, filename, gopro_sync_files=["accl", "gps", "gyro"]):
         print("Converting gopro mp4 file", filename)
 
         # converter = os.path.abspath("gopro_converter.js")
         filepathMP4 = os.path.abspath(filename + ".MP4")
         filepathBin = os.path.abspath(filename + ".bin")
         filepathCsv = os.path.abspath(filename + "_gopro.csv")
-        converter2bin = ["ffmpeg", "-y", "-i", filepathMP4, "-codec", "copy", "-map", "0:2", "-f", filepathBin]
+        converter2bin = ["ffmpeg", "-y", "-i", filepathMP4, "-codec", "copy", "-map", "0:2", "-f", "rawvideo", filepathBin]
         converter2csv = ["gpmd2csv", "-i", filepathBin, "-o", filepathCsv]
         subprocess.run(converter2bin)
         subprocess.run(converter2csv)
 
         result = None
 
-        for data_key in ["accl", "gps", "gyro"]:
+        for data_key in gopro_sync_files:
             filepathSubCsv = os.path.abspath(filename + "_gopro-" + data_key + '.csv')
             subValues = pd.read_csv(filepathSubCsv, low_memory=False)
 
@@ -354,7 +354,7 @@ class MtbDataProvider:
 
         return X_result, y_result
 
-    def prepare_raw_data(self, files, columns, gopro_columns=[], location_based_label_files=None, speed_threshold=1, fetch_from_apis=False, force_overwrite=True, min_cluster_size=3):
+    def prepare_raw_data(self, files, columns, gopro_columns=[], gopro_sync_files=["accl", "gps", "gyro"], location_based_label_files=None, speed_threshold=1, fetch_from_apis=False, force_overwrite=True, min_cluster_size=3):
         print("Preparing raw data...")
 
         results = []
@@ -469,6 +469,7 @@ class MtbDataProvider:
         last_longitude = 0
         last_item = []
         smallest_distance = 99999
+        smallest_distance_timestamp=0
         last_latitude_gopro = 0
         last_longitude_gopro = 0
 
@@ -499,10 +500,9 @@ class MtbDataProvider:
                 dest = (gopro_lat, gopro_lng)
                 distance = geodesic(origin, dest).meters
 
-                smallest_distance = np.min([distance, smallest_distance])
-
-        print(smallest_distance)
-        return
+                if (distance < smallest_distance):
+                    smallest_distance = distance
+                    smallest_distance_timestamp = gopro_data[0]
 
         # Loop through all data points
         for i in tqdm(range(len(data))):
@@ -547,8 +547,6 @@ class MtbDataProvider:
                 last_item = closest_item
                 result.append(np.hstack((data_object[:-3], closest_item, data_object[-3:]))) #put heading, lat, lng in the end
 
-        # TODO: Some have shape 10, some have 19,
-        #This is probably a data-goprodata merge thing
         return result
 
     def prepare_and_save_samples(self,
