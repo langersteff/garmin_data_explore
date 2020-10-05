@@ -32,126 +32,9 @@ LONGITUDE_KEY = 'position_long'
 
 class MtbDataProvider:
 
-    def convert_and_read_fit_file(self, filename):
-        print("Converting fit file", filename)
-
-        converter = os.path.abspath("FitSDKRelease_21.16.00/java/FitCSVTool.jar")
-        filepath = os.path.abspath(filename + ".fit")
-        subprocess.run(["java", "-jar", converter,  filepath])
-        data = pd.read_csv(filename + ".csv", low_memory=False)
-        datav = data.query("Message == 'record'").values
-        return datav
-
-    def convert_and_read_gopro_mp4_file(self, filename, gopro_sync_files=["accl", "gps", "gyro"]):
-        print("Converting gopro mp4 file", filename)
-
-        # converter = os.path.abspath("gopro_converter.js")
-        filepathMP4 = os.path.abspath(filename + ".MP4")
-        filepathBin = os.path.abspath(filename + ".bin")
-        filepathCsv = os.path.abspath(filename + "_gopro.csv")
-        converter2bin = ["ffmpeg", "-y", "-i", filepathMP4, "-codec", "copy", "-map", "0:2", "-f", "rawvideo", filepathBin]
-        converter2csv = ["gpmd2csv", "-i", filepathBin, "-o", filepathCsv]
-        subprocess.run(converter2bin)
-        subprocess.run(converter2csv)
-
-        result = None
-
-        for data_key in gopro_sync_files:
-            filepathSubCsv = os.path.abspath(filename + "_gopro-" + data_key + '.csv')
-            subValues = pd.read_csv(filepathSubCsv, low_memory=False)
-
-            if('GpsAccuracy' in subValues.columns):
-                subValues = subValues[subValues.GpsAccuracy < 300]
-
-            if (result is None):
-                result = subValues
-            else:
-                result = result.merge(subValues, left_on='Milliseconds', right_on='Milliseconds', how='left')
-
-        # Interpolate Data
-        for column in result.columns:
-            result[column].interpolate(inplace=True, limit_direction='both')
-
-        result.to_csv(filepathCsv)
-        return result.values, result.columns
-
-    def filter_data(self, df, speed_threshold=0):
-        COLUMNS = ['distance', 'speed', 'heart_rate', 'altitude', 'SensorHeading', 'SensorAccelerationX_HD', 'SensorAccelerationY_HD', 'SensorAccelerationZ_HD', LATITUDE_KEY, LONGITUDE_KEY]
-        result = {}
-
-        for row in df:
-            current_object = {}
-            current_objects = []
-            current_timestamp = 0
-            for i in range(len(row)):
-                column = row[i]
-
-                if column == 'timestamp':
-                    current_timestamp = row[i+1]
-                elif column in COLUMNS:
-                    if column.endswith("_HD"):
-                        current_object[column] = row[i+1]
-                    # lat/long is written in semicircles
-                    elif column in [LATITUDE_KEY, LONGITUDE_KEY]:
-                        current_object[column] = float(row[i+1]) * 180.0 / 2**31
-                    else:
-                        current_object[column] = float(row[i+1])
-
-            # SPEED THRESHOLD
-            if current_object['speed'] >= speed_threshold:
-                result[current_timestamp] = current_object
-
-        return result
-
-    def make_gopro_objects(self, gopro_values, gopro_csv_columns):
-        result = []
-
-        for row in gopro_values:
-            current_object = {}
-            for i in range(len(gopro_csv_columns)):
-                column = gopro_csv_columns[i]
-                current_object[column] = float(row[i])
-
-            result.append(current_object)
-
-        return result
-
-    def split_hd_values(self, data):
-        result = {}
-        for timestamp, row in data.items():
-
-            if 'SensorAccelerationX_HD' in row:
-                if (type(row['SensorAccelerationX_HD']) is str):
-                    hd_values_x = row['SensorAccelerationX_HD'].split('|')
-                    hd_values_y = row['SensorAccelerationY_HD'].split('|')
-                    hd_values_z = row['SensorAccelerationZ_HD'].split('|')
-
-                    for i in range(len(hd_values_x)):
-                        new_row = row.copy()
-                        new_row['SensorAccelerationX_HD'] = float(hd_values_x[i])
-                        new_row['SensorAccelerationY_HD'] = float(hd_values_y[i])
-                        new_row['SensorAccelerationZ_HD'] = float(hd_values_z[i])
-                        result[int(timestamp) * 1000 + i*40] = new_row # TODO: changed *4 to *40, does this make sense???
-            else:
-                result[int(timestamp) * 1000] = row # TODO: Added *1000, does this make sense???
-
-        return result
-
-    def get_values_for(self, data, keys, prepend_timestamps=True):
-        results = []
-        data_values = list(data.values()) if isinstance(data,dict) else  data
-        for key in keys:
-            result = [row[key] if key in row else 0 for row in data_values]
-            results.append(result)
-
-        # Add the timestamp as first value
-        if (prepend_timestamps):
-            results = np.vstack((list(data.keys()), results))
-
-        return results
 
     def calculate_features(self, samples, step_size, sub_sample_length, feature_thresholds, keep_positions=False):
-        print("Calculating Features:", samples[0].shape[0], sub_sample_length)
+        print("Calculating Features:", samples.shape, sub_sample_length)
 
         result = []
 
@@ -163,14 +46,13 @@ class MtbDataProvider:
         ALTITUDE = 3
         SPEED = 4
         HEART_RATE = 5
-        # TODO: There can be all the newly added gopro data inbetween here
         HEADING = 6
         LAT = 7
         LNG = 8
 
         for i in tqdm(range(len(samples))):
             sample = samples[i]
-            sample_slices, _, _ = self.slice_into_windows(sample, window_length=sub_sample_length, step_size=step_size)
+            sample_slices, _, _ = self.slice_into_windows(sample, window_length=sub_sample_length, step_size=step_size, includes_timestamp=False)
 
             feature_vector = []
 
@@ -233,7 +115,6 @@ class MtbDataProvider:
             # For each combination leading to a max heading change
             for max_delta_combination in max_delta_combinations:
                 # Find the corresponding element within the original heading slice
-                # TODO: is [0] the right way to go?
                 sample1_index = np.where(heading_slice == max_delta_combination[0])[0][0]
                 sample2_index = np.where(heading_slice == max_delta_combination[1])[0][0]
 
@@ -246,8 +127,11 @@ class MtbDataProvider:
                 location2 = (sample2[LAT], sample2[LNG])
                 distance = geodesic(location1, location2).meters
 
-                # Calculate the ratio (how tight a corner is)
-                max_heading_distance_ratio = np.max([max_delta/distance, max_heading_distance_ratio])
+                if distance > 0:
+                    # Calculate the ratio (how tight a corner is)
+                    max_heading_distance_ratio = np.max([max_delta/distance, max_heading_distance_ratio])
+                else:
+                    max_heading_distance_ratio = 99
 
         return max_heading_distance_ratio
 
@@ -262,32 +146,42 @@ class MtbDataProvider:
 
         return np.abs(heading_delta)
 
-    def slice_into_windows(self, data, labels=None, window_length=50, step_size=1):
+    def slice_into_windows(self, data, labels=None, window_length=50, step_size=1, includes_timestamp=True):
         windows = []
         windowed_labels = []
 
         if labels is None:
-            labels = np.zeros(len(data))
+            labels = np.zeros((len(data), 1))
+
+        if len(labels.shape) == 1:
+            labels = labels.reshape((labels.shape[0], 1))
 
         stride = int(window_length // (1 // step_size))
         for i in range(0, data.shape[0], stride):
             label = 0
             if i + window_length > data.shape[0]:
                 window = data[-window_length:,  :]
-                label = Counter(labels[-window_length:]).most_common()[0][0]
-                #label = np.argmax(np.bincount(labels[-window_length:]))
-                #label = round(np.mean(labels[-window_length:]))
+                label_slice = []
+
+                for label_set in labels[-window_length:].T:
+                    most_common = Counter(label_set).most_common()[0][0]
+                    label_slice.append(most_common)
             else:
                 window = data[i:i + window_length, :]
-                label = Counter(labels[i:i + window_length]).most_common()[0][0]
-                #label = np.argmax(np.bincount(labels[i:i + window_length]))
-                #label = round(np.mean(labels[i:i + window_length]))
+                label_slice = []
+
+                for label_set in labels[i:i + window_length].T:
+                    most_common = Counter(label_set).most_common()[0][0]
+                    label_slice.append(most_common)
+
             windows.append(window)
-            windowed_labels.append(label)
+            windowed_labels.append(label_slice)
 
         windows = np.array(windows)
         timestamps = windows[:, 0, 0] # seperate timestamps from data
-        windows = windows[:, :, 1:]
+
+        if includes_timestamp:
+            windows = windows[:, :, 1:]
 
         return windows, np.array(windowed_labels), timestamps
 
@@ -403,157 +297,11 @@ class MtbDataProvider:
         print("Done")
         return results, resulting_labels
 
-    def label_data(self, data, labels_file_name, distance_threshold = 50, min_cluster_size=3):
-        labels = []
-        labels_csv = pd.read_csv('data/' + labels_file_name + '.csv')
-
-        print("Labeling data by comparing locations ...")
-
-        # Cleanup Labels
-        labels_data = []
-        last_coordinates = (0,0)
-        for value_set in labels_csv.values:
-            coordinates = (value_set[0], value_set[1])
-            # Join the labels to one string
-            new_value_set = np.hstack([value_set[:2], '-'.join(value_set[2:5]), value_set[-1]])
-
-            # When changing labels, the app writes each change. Just take the latest label for one position in this case
-            if coordinates == last_coordinates:
-                labels_data[-1] = new_value_set
-            else:
-                labels_data.append(new_value_set)
-                last_coordinates = coordinates
-
-        labels_data = np.array(labels_data)
-        unique_labels, counts = np.unique(labels_data[:, 2], return_counts=True)
-        # Get rid of clusters smaller than min_cluster_size
-        unique_labels = unique_labels[counts >= min_cluster_size]
-        labels_data = list(filter(lambda dic: dic[2] in unique_labels, labels_data))
-        print("RESULTING NUMBERS OF CLUSTERS: " + str(len(unique_labels)))
-
-        last_label = 0
-        last_location = None
-        # Iterate through samples
-        for i in tqdm(range(len(data))):
-            sample = data[i]
-            sample_location = (sample[-2], sample[-1])
-
-            if last_location == sample_location:
-                labels.append(last_label)
-                break
-
-            smallest_distance_label = (99999, 0)
-
-            # Iterate through labels
-            for label_data in labels_data:
-                label_location = (label_data[0], label_data[1])
-
-                # Calculate distance between label and sample
-                distance = geodesic(sample_location, label_location).meters
-
-                # Find the smallest distance
-                if distance < distance_threshold and distance <= smallest_distance_label[0]:
-                    smallest_distance_label = (distance, label_data[2])
-                    last_label = smallest_distance_label[1]
-                    last_location = label_location
-
-            labels.append(smallest_distance_label[1])
-
-        return labels
-
-    def sync_data_with_gopro_data(self, data, gopro_data, distance_threshold=5): #sync_on_indices=[lat1, lng1, lat2, lng2]
-        print("Syncing data and gopro data...")
-        result = []
-
-        last_latitude = 0
-        last_longitude = 0
-        last_item = []
-        smallest_distance = 99999
-        smallest_distance_timestamp=0
-        last_latitude_gopro = 0
-        last_longitude_gopro = 0
-
-        for i in tqdm(range(len(data))):
-            data_object = data[i]
-            lat = data_object[-2]
-            lng = data_object[-1]
-
-            if (last_latitude == lat and last_longitude == lng):
-                continue
-
-            last_latitude = lat
-            last_longitude = lng
-
-            origin = (lat, lng)
-
-            for gopro_data_object in gopro_data:
-                gopro_lat = gopro_data_object[-2]
-                gopro_lng = gopro_data_object[-1]
-
-                if math.isnan(gopro_lat) or math.isnan(gopro_lng) or (last_latitude_gopro == gopro_lat and last_longitude_gopro == gopro_lng):
-                    continue
-
-                last_latitude_gopro = gopro_lat
-                last_longitude_gopro = gopro_lng
-
-                # Check if the item is in distance
-                dest = (gopro_lat, gopro_lng)
-                distance = geodesic(origin, dest).meters
-
-                if (distance < smallest_distance):
-                    smallest_distance = distance
-                    smallest_distance_timestamp = gopro_data[0]
-
-        # Loop through all data points
-        for i in tqdm(range(len(data))):
-            data_object = data[i]
-            lat = data_object[-2]
-            lng = data_object[-1]
-
-            # If this is the same position as the one before, sync with the last item found
-            if lat > 0 and lng > 0 and last_latitude == lat and last_longitude == lng and last_item is not []   :
-                # TODO: This happens all the time
-                result.append(np.hstack((data_object[:-3], last_item, data_object[-3:]))) #put heading, lat, lng in the end
-                continue
-
-            last_latitude = lat
-            last_longitude = lng
-            closest_item = None
-            smallest_distance = distance_threshold
-            origin = (lat, lng)
-
-            # Loop through Gopro Telemetry data
-            for gopro_data_object in gopro_data:
-                gopro_lat = gopro_data_object[-2]
-                gopro_lng = gopro_data_object[-1]
-
-                if math.isnan(gopro_lat) or math.isnan(gopro_lng):
-                    continue
-
-                # Check if the item is in distance
-                dest = (gopro_lat, gopro_lng)
-                distance = geodesic(origin, dest).meters
-
-                # If positions move closer together, pick the closer ones
-                if distance < smallest_distance:
-                    closest_item = gopro_data_object[:-2]
-                    smallest_distance = distance
-                elif closest_item is not None:
-                    # If positions start moving further away, break TODO
-                    break
-
-            # if a close enough item was found merge with data and append lat/lng at the end
-            if closest_item is not None:
-                last_item = closest_item
-                result.append(np.hstack((data_object[:-3], closest_item, data_object[-3:]))) #put heading, lat, lng in the end
-
-        return result
 
     def prepare_and_save_samples(self,
-                             files,
-                             columns,
-                             gopro_columns=[],
-                             prefix='',
+                             dataset_filename,
+                             input_columns,
+                             label_columns,
                              location_based_label_files = None,
                              window_lengths = [100, 200],
                              sub_sample_lengths = [25, 50],
@@ -563,28 +311,22 @@ class MtbDataProvider:
                              speed_threshold = .3,
                              min_cluster_size=3):
 
-        filename_prepared_data = '%s_prepared_data' % prefix
-
-        if os.path.isfile(filename_prepared_data + '.npy') and not force_overwrite:
-            data, labels = np.load(filename_prepared_data + '.npy', allow_pickle=True)
-        else:
-            data, labels = self.prepare_raw_data(files, columns, gopro_columns=gopro_columns, speed_threshold=speed_threshold, location_based_label_files=location_based_label_files, min_cluster_size=min_cluster_size)
-            np.save(filename_prepared_data, [data, labels])
+        dataset = pd.read_csv('data/' + dataset_filename + '.csv')
+        dataset_recordings = [pd.DataFrame(y) for x, y in dataset.groupby('input_filename', as_index=False)]
 
         for window_length in window_lengths:
             for sub_sample_length in sub_sample_lengths:
                 if sub_sample_length > window_length:
                     continue
 
-                filename_raw = "data/%s_%s_%s_raw" % (prefix, str(window_length),str(sub_sample_length))
-                filename_features = "data/%s_%s_%s_features" % (prefix, str(window_length),str(sub_sample_length))
-                filename_labels = "data/%s_%s_%s_labels" % (prefix, str(window_length),str(sub_sample_length))
-                filename_timestamps = "data/%s_%s_%s_timestamps" % (prefix, str(window_length),str(sub_sample_length))
-
+                filename_raw = "data/%s_%s_%s_raw" % (dataset_filename, str(window_length),str(sub_sample_length))
+                filename_features = "data/%s_%s_%s_features" % (dataset_filename, str(window_length),str(sub_sample_length))
+                filename_labels = "data/%s_%s_%s_labels" % (dataset_filename, str(window_length),str(sub_sample_length))
+                filename_timestamps = "data/%s_%s_%s_timestamps" % (dataset_filename, str(window_length),str(sub_sample_length))
 
                 # Normalize, despite the first and the last three fields (Timestamp, Heading in rad, Latitude, Longitude)
                 raw_scaler = StandardScaler()
-                concatenated_data = np.concatenate(data)[:, 1:-3]
+                concatenated_data = dataset[input_columns].values[:, 1:-3]
                 normalized_concatenated_data = raw_scaler.fit_transform(concatenated_data)
 
                 # Calculate the upper and lower 30 percentiles, which are needed for the features
@@ -593,19 +335,21 @@ class MtbDataProvider:
 
                 raw_windowed, labels_windowed, features_windowed, timestamps_windowed = [], [], [], []
 
-                #for data_recording in data:
-                for i in range(len(data)):
+                for dataset_recording in dataset_recordings:
 
-                    data_recording = np.asarray(data[i])
-                    labels_recording = np.asarray(labels[i])
+                    # Create an index mask on columns and map it to data_recording to get the data values
+                    # Same for labels. Multiple labels can be stored in one file and picked later
+                    training_data = dataset_recording[input_columns].values
+                    labels = dataset_recording[label_columns].values
 
                     # Normalize, despite the first and last three fields using the pretrained StandardScaler (Timestamp, Heading in rad, Latitude, Longitude)
-                    data_for_raw = np.hstack((data_recording[:, :1], raw_scaler.transform(data_recording[:, 1:-3]), data_recording[:, -3:]))
+                    # TODO: If you remove the columns for heading, lat, lng, this won't work anymore
+                    data_for_raw = np.hstack((training_data[:, :1], raw_scaler.transform(training_data[:, 1:-3]), training_data[:, -3:]))
 
                     padding_left_right = int((window_length%4)/2) if auto_padd_left_right else 0
                     raw_windowed_recording, labels_windowed_recording, timestamps_windowed_recording, _ = self.create_training_data(
                         data_for_raw,
-                        labels_recording,
+                        labels,
                         window_length=window_length,
                         step_size=step_size,
                         sub_sample_length=sub_sample_length,
@@ -614,8 +358,8 @@ class MtbDataProvider:
                         padding_left_right=padding_left_right)
 
                     features_windowed_recording, _, _, _ = self.create_training_data(
-                        data_recording,
-                        labels_recording,
+                        training_data,
+                        labels,
                         window_length=window_length,
                         step_size=step_size,
                         sub_sample_length=sub_sample_length,

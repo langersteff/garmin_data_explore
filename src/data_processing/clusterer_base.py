@@ -27,6 +27,8 @@ class ClustererBase:
         self.filename_score = "evaluation/%s_%s_score.csv" % (self.experiment_prefix, eval_prefix)
 
     def plot_y_pred(self, y_pred, latitudes, longitudes, title=None):
+        if not self.plot_pred:
+            return
         if title is not None:
             self.title = title
         print(self.title)

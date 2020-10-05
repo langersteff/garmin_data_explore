@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.pyplot import figure
 from .clusterer_base import ClustererBase
 from keras.optimizers import SGD
-from sklearn.cluster import AgglomerativeClustering
+from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.decomposition import PCA
 
 from numpy.random import seed
@@ -34,6 +34,7 @@ class ClustererClassical(ClustererBase):
 
         # Check if a PCA should be applied (This is not the case for Features-Only)
         if pca_n_components is not None:
+            print("PCA on components:", pca_n_components)
             pca = PCA(n_components=pca_n_components, random_state=42)
             data = pca.fit_transform(data)
 
@@ -41,7 +42,7 @@ class ClustererClassical(ClustererBase):
         if is_classical_raw_fi:
             data = np.hstack((data, data_features))
 
-        clusterer = AgglomerativeClustering(n_clusters=num_clusters)
+        clusterer = KMeans(n_clusters=num_clusters)
         y_pred = clusterer.fit_predict(data)
         np.save(self.filename_y_pred, y_pred)
 

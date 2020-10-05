@@ -35,7 +35,7 @@ class ClustererCAEL2(ClustererBase):
                  alpha=1.0)
 
         print(data.shape, "data.shape\n\n")
-        cael2.cae.summary()
+        #cael2.cae.summary()
 
         cael2.compile()
         cael2.fit(data, batch_size=batch_size, epochs=epochs)
