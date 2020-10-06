@@ -164,14 +164,22 @@ class MtbDataProvider:
                 label_slice = []
 
                 for label_set in labels[-window_length:].T:
-                    most_common = Counter(label_set).most_common()[0][0]
+                    most_common = Counter(label_set).most_common()
+                    if len(most_common) == 0:
+                        most_common = 0
+                    else:
+                        most_common = most_common[0][0]
                     label_slice.append(most_common)
             else:
                 window = data[i:i + window_length, :]
                 label_slice = []
 
                 for label_set in labels[i:i + window_length].T:
-                    most_common = Counter(label_set).most_common()[0][0]
+                    most_common = Counter(label_set).most_common()
+                    if len(most_common) == 0:
+                        most_common = 0
+                    else:
+                        most_common = most_common[0][0]
                     label_slice.append(most_common)
 
             windows.append(window)

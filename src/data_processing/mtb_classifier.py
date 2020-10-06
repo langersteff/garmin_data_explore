@@ -32,11 +32,24 @@ from sklearn.preprocessing import normalize, LabelEncoder
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
+from sklearn.neural_network import MLPClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC, LinearSVC
+from sklearn.gaussian_process import GaussianProcessClassifier
+from sklearn.gaussian_process.kernels import RBF
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.cluster import KMeans, DBSCAN, AffinityPropagation, SpectralClustering, MeanShift, AgglomerativeClustering
+from sklearn.mixture import GaussianMixture
+from joblib import dump, load
+
+
 
 class MtbClassifier:
 
     def run_classification(self,
-        classifiers,
         classifier_names,
         mtb_data_provider,
         dataset_input='',
@@ -52,83 +65,139 @@ class MtbClassifier:
         print_plots=False,
         normalize_confusion_matrix='all'):
 
+        results = []
+
         print(label_column)
+        # Read dataset
         df = pd.read_csv('data/' + dataset_input + '.csv')
         X = df[input_columns].values
         y = df[label_column].values
-        y_mask = y != 0
-        y = y[y_mask]
-        print(np.unique(y, return_counts=True))
-        y = LabelEncoder().fit_transform(y)
-        X = X[y_mask]
+
+
 
         # Normalize, despite the first and the last three fields (Timestamp, Heading in rad, Latitude, Longitude)
         raw_scaler = StandardScaler()
+        heading = X[:,-3].reshape((-1,1))
         X_norm = raw_scaler.fit_transform(X[:, 1:-3])
+        X_norm = np.hstack((X[:, 0].reshape((-1, 1)), X_norm, X[:, -3:]))
 
-        print("Fitting pca...", X_norm.shape)
-        pca = PCA(n_components=X_norm.shape[1], random_state=42)
-        X_norm = pca.fit_transform(X_norm)
+        # TODO: Does Garmin offer a "Distance Delta" value? This could be used instead of calculating through Lat,Lng
 
-        # Run for every classifier
-        for i in range(len(classifiers)):
-            clf = classifiers[i]
-            print("Classifier:", classifier_names[i])
-            scores = []
-            score_count = 0
+        # Run a PCA on the data to reduce dimensionality
+        # print("Fitting pca...", X_norm.shape)
+        # pca = PCA(n_components=X_norm.shape[1], random_state=42)
+        # X_norm = pca.fit_transform(X_norm)
 
-            for window_length in window_lengths:
-                for sub_sample_length in sub_sample_lengths:
-                    if sub_sample_length > window_length:
-                        continue
+        for window_length in window_lengths:
+            for sub_sample_length in sub_sample_lengths:
+                if sub_sample_length > window_length:
+                    continue
 
-                    print("----------------------------------------------------------------")
-                    print("window_length:", window_length)
-                    print("sub_sample_length:", sub_sample_length)
+                print("----------------------------------------------------------------")
+                print("window_length:", window_length)
+                print("sub_sample_length:", sub_sample_length)
+                print('------')
 
-                    # Create KFold Splits
-                    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-                    kf.get_n_splits(X_norm)
+                # Create windowed data
+                X_base, y_base, _, _ = mtb_data_provider.create_training_data(X_norm[:, :-2], y, window_length=window_length, sub_sample_length=sub_sample_length, clear_outliers = clear_outliers, step_size=step_size, calc_features=False)
 
-                    # Run for every split
-                    for train_index, test_index in kf.split(X_norm):
-                        X_train, X_test = X_norm[train_index], X_norm[test_index]
-                        y_train, y_test = y[train_index], y[test_index]
+                # print(X_base.shape)
+                # for  i in range(X_base.shape[2]):
+                #     foo = X_base[:, :, i]
+                #     foo = np.concatenate(foo, axis=0)
+                #     plt.plot(foo)
+                #     plt.show()
+                # exit
 
-                        #X_train = pca.transform(X_train)
-                        #X_test = pca.transform(X_test)
+                # Remove samples that do not match the label requirement (e.g. "is not 0")
+                y_mask = y_base != ignore_label
+                y_mask = y_mask.reshape((-1,))
+                y_base = y_base[y_mask]
+                print("Labels", np.unique(y_base, return_counts=True))
+                y_base = LabelEncoder().fit_transform(y_base)
+                X_base = X_base[y_mask]
 
-                        X_train, y_train, _, _ = mtb_data_provider.create_training_data(X_train, y_train, window_length=window_length, clear_outliers = clear_outliers, step_size=step_size, calc_features=False)
-                        X_test, y_test, _, _ = mtb_data_provider.create_training_data(X_test, y_test, window_length=window_length, clear_outliers = clear_outliers, step_size=step_size, calc_features=False)
+                lower_thresholds = np.percentile(X_base, 30, axis=2)
+                upper_thresholds = np.percentile(X_base, 70, axis=2)
+                X_features, _, _, _ = mtb_data_provider.create_training_data(X_norm, y_base, window_length=window_length, sub_sample_length=sub_sample_length, clear_outliers = clear_outliers, step_size=step_size, calc_features=True, feature_thresholds=[lower_thresholds, upper_thresholds])
+                X_features = X_features[y_mask]
 
-                        y_train = np.ndarray.flatten(y_train)
-                        y_test = np.ndarray.flatten(y_test)
+                # print(X_base.shape, X_features.shape, y_base.shape)
+                X_base = X_base.reshape((X_base.shape[0], X_base.shape[1] * X_base.shape[2]))
 
-                        # Oversample
-                        X_train, y_train = mtb_data_provider.evenly_oversample(X_train, y_train)
-                        X_test, y_test = mtb_data_provider.evenly_oversample(X_test, y_test)
+                # Create KFold Splits
+                kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+                kf.get_n_splits(X_base)
 
-                        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1] * X_train.shape[2]))
-                        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1] * X_test.shape[2]))
+                # Run for every split
+                for train_index, test_index in kf.split(X_base):
+                    X_train, X_test = X_base[train_index], X_base[test_index]
+                    y_train, y_test = y_base[train_index], y_base[test_index]
 
-                        # Shuffle
-                        #X_train, y_train = shuffle(X_train, y_train)
-                        clf.fit(X_train, y_train)
-                        scores.append(clf.score(X_test, y_test))
-                        score_count += 1
-                        print("Score:", clf.score(X_test, y_test))
+                    X_train_features, X_test_features = X_features[train_index], X_features[test_index]
+
+                    y_train_base = np.ndarray.flatten(y_train)
+                    y_test_base = np.ndarray.flatten(y_test)
+
+                    # Oversample
+                    X_train, y_train = mtb_data_provider.evenly_oversample(X_train, y_train_base)
+                    X_train_features, _ = mtb_data_provider.evenly_oversample(X_train_features, y_train_base)
+
+                    # X_test, y_test = mtb_data_provider.evenly_oversample(X_test, y_test_base)
+                    # X_test_features, _ = mtb_data_provider.evenly_oversample(X_test_features, y_test_base)
+
+                    # Run for every classifier
+                    print("Running Classifiers", classifier_names)
+                    for classifier_name in classifier_names:
+
+                        clf1 = self.get_classifier(classifier_name)
+                        clf1.fit(X_train, y_train)
+                        score1 = clf1.score(X_test, y_test)
+                        print("Raw", classifier_name, score1)
+
+                        clf2 = self.get_classifier(classifier_name)
+                        clf2.fit(X_train_features, y_train)
+                        score2 = clf2.score(X_test_features, y_test)
+                        print("Features", classifier_name, score2)
+
+                        clf3 = self.get_classifier(classifier_name)
+                        clf3.fit(np.hstack((X_train, X_train_features)), y_train)
+                        score3 = clf3.score(np.hstack((X_test, X_test_features)), y_test)
+                        print("Hybrid", classifier_name, score3)
+
+                        result_name = "%s_%s_%s_%s" % (label_column, classifier_name, str(window_length), str(sub_sample_length))
+                        results.append([result_name, score1, score2, score3])
+
+                        dump(clf1, 'evaluation/' + result_name + '_raw.joblib')
+                        dump(clf2, 'evaluation/' + result_name + '_features.joblib')
+                        dump(clf3, 'evaluation/' + result_name + '_hybrid.joblib')
 
                         if print_plots:
                             unique, counts = np.unique(y_train, return_counts=True)
-                            y_test_pred = clf.predict(X_test)
-                            mtb_visualizer.print_confusion_matrix(y_test, y_test_pred, unique.tolist())
+                            y_test_pred1 = clf1.predict(X_test)
+                            y_test_pred2 = clf2.predict(X_test_features)
+                            y_test_pred3 = clf3.predict(np.hstack((X_test, X_test_features)))
+                            print("Raw")
+                            mtb_visualizer.print_confusion_matrix(y_test, y_test_pred1, unique.tolist())
+                            print("Features")
+                            mtb_visualizer.print_confusion_matrix(y_test, y_test_pred2, unique.tolist())
+                            print("Hybrid")
+                            mtb_visualizer.print_confusion_matrix(y_test, y_test_pred3, unique.tolist())
 
-                    score = np.sum(scores) / score_count
-                    print("Avg Score:", score)
-                    print("Min", np.min(scores))
-                    print("Max", np.max(scores))
-                    print("Median", np.median(scores))
-                    print('------------------------------------------------\n\n')
+                    print('------')
+        print(results)
+        results_file_name = "evaluation/%s_%s" % (dataset_input, label_column)
+        np.save(results_file_name, np.asarray(results))
+
+    def get_classifier(self, classifier_name):
+        if classifier_name == 'KNeighborsClassifier':
+            return KNeighborsClassifier(3)
+        elif classifier_name == 'DecisionTreeClassifier':
+            return DecisionTreeClassifier(max_depth=5, random_state=42)
+        elif classifier_name == 'RandomForestClassifier':
+            return RandomForestClassifier(max_depth=5, n_estimators=10, random_state=42)
+        elif classifier_name == 'MLPClassifier':
+            return MLPClassifier(alpha=1, max_iter=20000, random_state=42)
 
 
     def create_cnn_model(self, input_shape, num_classes, features_shape=None, n_conv_blocks=2):
